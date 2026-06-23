@@ -357,6 +357,9 @@ class SuperDraw(Star):
         """
 
         async with self.semaphore:
+            # 在控制台打印当前使用的生图模型，方便排查问题和确认调用链路
+            logger.info(f"[SuperDraw] 开始生图 | 模型: {self.data.currentModelKey} | 提示词: {prompt[:40]}...")
+
             try:
                 # 调用生图接口
                 result = await makeImages(self.data.providers, self.data.currentProviderIdx, prompt, imgs, size, quality, n)
