@@ -114,46 +114,37 @@ async def _callOpenAi(p: dict, prompt: str, images: list[bytes], size: str, qual
     if not p.get("apiKeys"):
         raise RuntimeError("OpenAI provider 没有配置 apiKeys")
 
-    for _ in range(maxRetry):
-        try:
-            key = p["apiKeys"][keyIdx % len(p["apiKeys"])]  # 取当前 key
-            client = _openAiClient(p["baseUrl"], key, p.get("timeout", 180))
+    key = p["apiKeys"][0]
+    client = _openAiClient(p["baseUrl"], key, p.get("timeout", 180))
 
-            # 构建请求参数
-            kwargs: dict[str, Any] = {
-                "model": p["model"],
-                "prompt": prompt,
-                "n": min(max(1, n), 4),  # 限制 1-4 张
-                "size": _OA_SIZES.get(size, "1024x1024"),  # 转成像素尺寸
-            }
-            if quality in _OA_QUALITIES:  # "auto" 时不传，让接口自己决定
-                kwargs["quality"] = quality
+    # 构建请求参数
+    kwargs: dict[str, Any] = {
+        "model": p["model"],
+        "prompt": prompt,
+        "n": min(max(1, n), 4),  # 限制 1-4 张
+        "size": _OA_SIZES.get(size, "1024x1024"),  # 转成像素尺寸
+    }
+    if quality in _OA_QUALITIES:  # "auto" 时不传，让接口自己决定
+        kwargs["quality"] = quality
 
-            # 有参考图用 edit 接口，没有用 generate 接口
-            if images:
-                processed_images = []
-                for i, img in enumerate(images[:16]):
-                    # OpenAI 不支持 GIF/WEBP 动态图，这里强制规范化成 PNG
-                    norm_img, mime = normalize_to_supported_image(img, target_fmt="png")
-                    processed_images.append((f"ref_{i}.png", norm_img, mime))
+    # 有参考图用 edit 接口，没有用 generate 接口
+    if images:
+        processed_images = []
+        for i, img in enumerate(images[:16]):
+            # OpenAI 不支持 GIF/WEBP 动态图，这里强制规范化成 PNG
+            norm_img, mime = normalize_to_supported_image(img, target_fmt="png")
+            processed_images.append((f"ref_{i}.png", norm_img, mime))
 
-                kwargs["image"] = processed_images
-                resp = await client.images.edit(**kwargs)
-            else:
-                resp = await client.images.generate(**kwargs)
+        kwargs["image"] = processed_images
+        resp = await client.images.edit(**kwargs)
+    else:
+        resp = await client.images.generate(**kwargs)
 
-            # 从响应里取出 base64 编码的图片，解码成 bytes
-            result = [base64.b64decode(d.b64_json) for d in (resp.data or []) if getattr(d, "b64_json", None)]
-            if not result:
-                raise ValueError("OpenAI 响应中没有图片数据")
-            return result
-
-        except Exception as e:
-            lastError = str(e)
-            _clients.pop(("openai", p["baseUrl"], p["apiKeys"][keyIdx % len(p["apiKeys"])]), None)  # 丢掉失败的客户端
-            keyIdx += 1  # 换下一个 key
-
-    raise RuntimeError(f"OpenAI 重试 {maxRetry} 次后失败: {lastError}")
+    # 从响应里取出 base64 编码的图片，解码成 bytes
+    result = [base64.b64decode(d.b64_json) for d in (resp.data or []) if getattr(d, "b64_json", None)]
+    if not result:
+        raise ValueError("OpenAI 响应中没有图片数据")
+    return result
 
 
 def _openAiClient(baseUrl: str, apiKey: str, timeout: int) -> AsyncOpenAI:
@@ -190,62 +181,54 @@ async def _callGemini(p: dict, prompt: str, images: list[bytes], size: str, qual
     if genai is None:
         raise RuntimeError("缺少 google-genai 依赖，请 pip install google-genai")
 
-    lastError = "生成失败"
-    keyIdx = 0
-    maxRetry = max(1, p.get("maxRetry", 3))
+    if not p.get("apiKeys"):
+        raise RuntimeError("Gemini provider 没有配置 apiKeys")
 
-    for _ in range(maxRetry):
-        try:
-            key = p["apiKeys"][keyIdx % len(p["apiKeys"])]  # 取当前 key
-            client = _geminiClient(key)
+    key = p["apiKeys"][0]
+    client = _geminiClient(key, p.get("baseUrl"))
 
-            # 构建请求内容：文字提示词 + 参考图
-            parts: list[Any] = [genaiTypes.Part.from_text(text=prompt)]
-            for img in images[:16]:
-                # 同样应用规范化，把 GIF/动态图转成静态首帧
-                norm_img, mime = normalize_to_supported_image(img, target_fmt="jpeg")
-                if mime.startswith("image/"):  # 只传真正的图片，跳过无法识别的
-                    parts.append(genaiTypes.Part.from_bytes(data=norm_img, mime_type=mime))
+    # 构建请求内容：文字提示词 + 参考图
+    parts: list[Any] = [genaiTypes.Part.from_text(text=prompt)]
+    for img in images[:16]:
+        mime = detectMimeType(img)
+        if mime.startswith("image/"):  # 只传真正的图片，跳过无法识别的
+            parts.append(genaiTypes.Part.from_bytes(data=img, mime_type=mime))
 
-            # 配置生成参数：要求返回图片
-            config = genaiTypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
-            ratio = _GM_RATIOS.get(size)
-            if ratio:  # 有对应比例就设置，没有就让模型自己决定
-                config.image_config = genaiTypes.ImageConfig(aspect_ratio=ratio)
+    # 配置生成参数：要求返回图片
+    config = genaiTypes.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])
+    ratio = _GM_RATIOS.get(size)
+    if ratio:  # 有对应比例就设置，没有就让模型自己决定
+        config.image_config = genaiTypes.ImageConfig(aspect_ratio=ratio)
 
-            # Gemini 每次只生成一张，要 n 张就调 n 次
-            result: list[bytes] = []
-            for _ in range(min(max(1, n), 4)):
-                resp = await client.aio.models.generate_content(
-                    model=p["model"],
-                    contents=parts,
-                    config=config,
-                )
-                # 从响应里提取图片字节
-                for part in getattr(resp, "parts", []) or []:
-                    inline = getattr(part, "inline_data", None)
-                    data = getattr(inline, "data", None) if inline else None
-                    if isinstance(data, bytes):  # 直接就是字节
-                        result.append(data)
-                    elif isinstance(data, str):  # base64 编码的字符串
-                        result.append(base64.b64decode(data))
+    # Gemini 每次只生成一张，要 n 张就调 n 次
+    result: list[bytes] = []
+    for _ in range(min(max(1, n), 4)):
+        resp = await client.aio.models.generate_content(
+            model=p["model"],
+            contents=parts,
+            config=config,
+        )
+        # 从响应里提取图片字节
+        for part in getattr(resp, "parts", []) or []:
+            inline = getattr(part, "inline_data", None)
+            data = getattr(inline, "data", None) if inline else None
+            if isinstance(data, bytes):  # 直接就是字节
+                result.append(data)
+            elif isinstance(data, str):  # base64 编码的字符串
+                result.append(base64.b64decode(data))
 
-            if not result:
-                raise ValueError("Gemini 响应中没有图片数据")
-            return result
-
-        except Exception as e:
-            lastError = str(e)
-            _clients.pop(("gemini", p["apiKeys"][keyIdx % len(p["apiKeys"])]), None)  # 丢掉失败的客户端
-            keyIdx += 1  # 换下一个 key
-
-    raise RuntimeError(f"Gemini 重试 {maxRetry} 次后失败: {lastError}")
+    if not result:
+        raise ValueError("Gemini 响应中没有图片数据")
+    return result
 
 
-def _geminiClient(apiKey: str) -> Any:
-    """获取或创建 Gemini 客户端（按 key 缓存）。"""
+def _geminiClient(apiKey: str, baseUrl: str | None = None) -> Any:
+    """获取或创建 Gemini 客户端（按 key + baseUrl 缓存）。"""
 
-    k = ("gemini", apiKey)
+    k = ("gemini", apiKey, baseUrl or "")
     if k not in _clients:
-        _clients[k] = genai.Client(api_key=apiKey)
+        opts = {}
+        if baseUrl:
+            opts["http_options"] = genaiTypes.HttpOptions(base_url=baseUrl)
+        _clients[k] = genai.Client(api_key=apiKey, **opts)
     return _clients[k]
