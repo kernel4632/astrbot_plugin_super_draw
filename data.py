@@ -88,7 +88,12 @@ class Data:
 
         self.enableDataTools = True  # 是否允许 LLM 工具读写插件数据和积分
         self.enablePromptOptimize = True  # 是否启用提示词优化命令和工具
+        self.promptOptimizeProviderId = ""  # 提示词优化用的 AstrBot 聊天模型 ID，留空就用当前会话模型
         self.promptOptimizeTemplate = ""  # 提示词优化模板，留空时使用 _defaultOptimizeTemplate()
+        self.enableToolCommentary = True  # LLM 工具生图完成后，是否让 Bot 结合上下文自然评价
+        self.toolCommentaryProviderId = ""  # 生图后评价用的 AstrBot 聊天模型 ID，留空就用当前会话模型
+        self.toolCommentaryTemplate = ""  # 生图后评价模板，留空时使用 _defaultToolCommentaryTemplate()
+        self.toolCommentaryMaxLength = 180  # Bot 评价最长字数，避免图片发出后又刷一大段文字
 
         self.presets: dict[str, str] = {}  # 预设名 -> 预设内容，用户输入“手办化 猫”会自动拼接
         self.usageByDate: dict[str, dict[str, int]] = {}  # {日期: {用户ID: 已生成张数}}
@@ -148,9 +153,14 @@ class Data:
         tools = self.rawConfig.get("data_tools", {}) or {}  # Bot 数据工具配置，控制 LLM 是否能查改积分和读取插件状态
         self.enableDataTools = bool(tools.get("enable_data_tools", True))
 
-        optimize = self.rawConfig.get("prompt_optimize", {}) or {}  # 提示词优化配置，管理员可改开关和模板
+        optimize = self.rawConfig.get("prompt_optimize", {}) or {}  # 提示词优化配置，管理员可改开关、模型和模板
         self.enablePromptOptimize = bool(optimize.get("enable_prompt_optimize", True))
+        self.promptOptimizeProviderId = str(optimize.get("optimize_provider_id", "") or "").strip()
         self.promptOptimizeTemplate = str(optimize.get("optimize_template", "") or "").strip()
+        self.enableToolCommentary = bool(optimize.get("enable_tool_commentary", True))
+        self.toolCommentaryProviderId = str(optimize.get("tool_commentary_provider_id", "") or "").strip()
+        self.toolCommentaryTemplate = str(optimize.get("tool_commentary_template", "") or "").strip()
+        self.toolCommentaryMaxLength = self._safeInt(optimize.get("tool_commentary_max_length", 180), 180, 20, 800)
 
         self.providers = self._parseProviders(self.rawConfig.get("api_providers", []))
         self.models = [{"key": f"{p['name']}/{p['model']}", "provider": p["name"], "model": p["model"]} for p in self.providers]
@@ -421,8 +431,15 @@ class Data:
             ]
         )
 
+    def buildOptimizePrompt(self, text: str) -> str:
+        """把用户短描述套进 WebUI 模板，交给 AstrBot 聊天模型真正改写。"""
+
+        cleanText = str(text or "").strip()
+        template = self.promptOptimizeTemplate or self._defaultOptimizeTemplate()
+        return template.replace("{prompt}", cleanText).strip()[: self.maxPromptLength]
+
     def optimizePrompt(self, text: str) -> str:
-        """按 WebUI 模板优化提示词；这里不直接发图，只把短描述整理成更适合生图模型理解的完整描述。"""
+        """同步兜底优化；当 AstrBot 模型调用失败时，至少把模板结果返回给用户。"""
 
         if not self.enablePromptOptimize:
             return "提示词优化功能当前关闭。"
@@ -431,13 +448,32 @@ class Data:
         if not cleanText:
             return f"请在提示词优化命令后面写你想画什么，例如 {self.formatCommand(self.optimizeCommands[0])} 猫咪头像。"
 
-        template = self.promptOptimizeTemplate or self._defaultOptimizeTemplate()
-        return template.replace("{prompt}", cleanText).strip()[: self.maxPromptLength]
+        return self.buildOptimizePrompt(cleanText)
+
+    def buildToolCommentaryPrompt(self, request: dict[str, Any], contextText: str, imageText: str) -> str:
+        """把生图任务、聊天上下文和图片信息套进评价模板，让 Bot 像自然接话一样发言。"""
+
+        template = self.toolCommentaryTemplate or self._defaultToolCommentaryTemplate()
+        values = {
+            "prompt": str(request.get("prompt", "")),
+            "model": self.currentModelKey or "未配置",
+            "context": contextText.strip() or "暂无可读取的群聊上下文。",
+            "images": imageText.strip() or "图片已生成并发送到当前聊天。",
+            "max_length": str(self.toolCommentaryMaxLength),
+        }
+        for key, value in values.items():
+            template = template.replace("{" + key + "}", value)
+        return template.strip()[: max(self.maxPromptLength, 4000)]
 
     def _defaultOptimizeTemplate(self) -> str:
         """默认提示词优化模板；管理员可以在 WebUI 里完全替换成自己的风格。"""
 
-        return "请把下面这句话优化成适合图像生成模型的中文提示词，保留用户原意，补充主体、构图、风格、光影、细节和用途，不要加入违规内容：{prompt}"
+        return "请把下面这句话优化成适合图像生成模型的中文提示词，保留用户原意，补充主体、构图、风格、光影、细节和用途，不要加入违规内容，只输出优化后的提示词：{prompt}"
+
+    def _defaultToolCommentaryTemplate(self) -> str:
+        """默认生图后评价模板；只给 LLM 工具生图使用，用户命令生图不会触发。"""
+
+        return "你是群聊里的 Bot，刚刚亲自完成了一次生图。请结合群聊上下文、用户原始需求和生成图片信息，自然接一句短回复，不要像评审报告，不要复述任务编号，不要说自己无法看图。\n用户生图需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n生成图片信息：\n{images}\n回复要求：最多 {max_length} 字，像群友聊天一样自然，可以点评亮点、提醒如果想改哪里可以继续说。"
 
     def formatCommand(self, name: str) -> str:
         """把命令词加上当前前缀；WebUI 改前缀后，帮助文本和 Bot 工具看到的是同一套命令。"""

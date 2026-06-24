@@ -165,9 +165,9 @@ class SuperDraw(Star):
     @filter.command("提示词优化")
     @filter.command("优化提示词")
     async def cmdOptimizePrompt(self, event: AstrMessageEvent):
-        """用户发送 /提示词优化 时触发；按 WebUI 模板把短描述整理成更完整的生图提示词。"""
+        """用户发送 /提示词优化 时触发；调用 WebUI 选定的 AstrBot 模型改写提示词。"""
 
-        yield event.plain_result(self.data.optimizePrompt(self._commandBody(event)))
+        yield event.plain_result(await self._optimizePromptByModel(event, self._commandBody(event)))
 
     # ========== LLM 工具 ==========
 
@@ -202,6 +202,8 @@ class SuperDraw(Star):
         if fullReason := self._queueFullReason():
             return fullReason
 
+        request["event"] = event  # 工具生图才保存事件，后续评价需要读取当前会话上下文
+        request["fromTool"] = True  # 只有 LLM 工具生图完成后才触发 Bot 自然评价，普通命令不触发
         request["pointsCost"] = self.data.spendDrawPoints(request["pointKey"], request["count"], request["isPrivate"])
         taskId = self._newTaskId(request["userId"], request["prompt"])
         self._startTask(taskId, self._runDrawTask(taskId, request), self._taskInfoFromRequest(request))
@@ -256,7 +258,7 @@ class SuperDraw(Star):
             prompt(string): 用户原始想法或短提示词
         """
 
-        return self.data.optimizePrompt(prompt)
+        return await self._optimizePromptByModel(event, prompt)
 
     # ========== 生图指令编排 ==========
 
@@ -268,7 +270,8 @@ class SuperDraw(Star):
                 logger.info(f"[SuperDraw] 开始任务 {taskId} | {self.data.currentModelKey} | {request['prompt'][:60]}")
                 imageBytesList = await makeImages(self.data.providers, self.data.currentProviderIndex, request["prompt"], request["images"], request["size"], request["quality"], request["count"], self.data.getNextKey)
                 self.data.recordUsage(request["userId"], len(imageBytesList))
-                await self._sendImages(request["userId"], taskId, imageBytesList, request)
+                imagePaths = await self._sendImages(request["userId"], taskId, imageBytesList, request)
+                await self._sendToolCommentary(taskId, request, imagePaths)
             except asyncio.CancelledError:
                 self.data.refundPoints(request["pointKey"], int(request.get("pointsCost", 0)))
                 await self.context.send_message(request["userId"], MessageChain().message(f"生图任务 {taskId} 已取消，积分已退回。"))
@@ -285,16 +288,97 @@ class SuperDraw(Star):
             finally:
                 self.taskInfo.pop(taskId, None)
 
-    async def _sendImages(self, targetId: str, taskId: str, imageBytesList: list[bytes], request: dict[str, Any]) -> None:
-        """把模型返回的图片发回聊天；AstrBot 需要文件路径时，只保存必要的临时发送文件。"""
+    async def _sendImages(self, targetId: str, taskId: str, imageBytesList: list[bytes], request: dict[str, Any]) -> list[str]:
+        """把模型返回的图片发回聊天；返回实际发送路径，方便 LLM 工具生图后继续评价。"""
 
+        imagePaths: list[str] = []
         chain = MessageChain().message(f"生图完成：{taskId}\n模型：{self.data.currentModelKey}")
         for imageBytes in imageBytesList:
             path = saveImage(self.cacheDir, imageBytes, self.data.saveFormat)
             if path:
+                imagePaths.append(path)
                 chain.file_image(path)
 
         await self.context.send_message(targetId, chain)
+        return imagePaths
+
+    async def _optimizePromptByModel(self, event: AstrMessageEvent, text: str) -> str:
+        """用 WebUI 选定的 AstrBot 聊天模型优化提示词；失败时退回模板文本，用户仍有结果可用。"""
+
+        if not self.data.enablePromptOptimize:
+            return "提示词优化功能当前关闭。"
+
+        cleanText = str(text or "").strip()
+        if not cleanText:
+            return f"请在提示词优化命令后面写你想画什么，例如 {self.data.formatCommand(self.data.optimizeCommands[0])} 猫咪头像。"
+
+        prompt = self.data.buildOptimizePrompt(cleanText)
+        try:
+            return await self._callAstrBotModel(event, self.data.promptOptimizeProviderId, prompt, "提示词优化")
+        except Exception as error:
+            logger.warning(f"[SuperDraw] 提示词优化模型调用失败，改用模板兜底: {error}")
+            return prompt
+
+    async def _sendToolCommentary(self, taskId: str, request: dict[str, Any], imagePaths: list[str]) -> None:
+        """LLM 工具生图完成后，让 Bot 结合会话上下文自然追评；普通 /生图 命令不会走这里。"""
+
+        if not request.get("fromTool") or not self.data.enableToolCommentary:
+            return
+
+        event = request.get("event")
+        if not isinstance(event, AstrMessageEvent):
+            return
+
+        try:
+            contextText = await self._conversationContext(event)
+            imageText = self._imageInfo(imagePaths)
+            prompt = self.data.buildToolCommentaryPrompt(request, contextText, imageText)
+            comment = await self._callAstrBotModel(event, self.data.toolCommentaryProviderId, prompt, "生图后评价")
+            comment = comment.strip()[: self.data.toolCommentaryMaxLength]
+            if comment:
+                await self.context.send_message(request["userId"], MessageChain().message(comment))
+        except Exception as error:
+            logger.warning(f"[SuperDraw] 生图后评价失败，已跳过不影响发图: {error}")
+
+    async def _callAstrBotModel(self, event: AstrMessageEvent, providerId: str, prompt: str, actionName: str) -> str:
+        """统一调用 AstrBot 已配置的聊天模型；providerId 留空时使用当前会话模型。"""
+
+        chatProviderId = providerId.strip() or await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
+        if not chatProviderId:
+            raise RuntimeError(f"{actionName}没有可用的 AstrBot 聊天模型，请在会话或 WebUI 配置 provider_id。")
+
+        llmResp = await self.context.llm_generate(chat_provider_id=chatProviderId, prompt=prompt)
+        text = str(getattr(llmResp, "completion_text", "") or "").strip()
+        if not text:
+            raise RuntimeError(f"{actionName}模型返回为空。")
+        return text
+
+    async def _conversationContext(self, event: AstrMessageEvent) -> str:
+        """读取 AstrBot 当前会话历史；读不到就退回当前消息文本，保证评价至少知道刚才聊了什么。"""
+
+        try:
+            convMgr = self.context.conversation_manager
+            conversationId = await convMgr.get_curr_conversation_id(event.unified_msg_origin)
+            conversation = await convMgr.get_conversation(event.unified_msg_origin, conversationId) if conversationId else None
+            history = str(getattr(conversation, "history", "") or "").strip()
+            if history:
+                return history[-3000:]
+        except Exception as error:
+            if self.data.debugMode:
+                logger.warning(f"[SuperDraw] 读取会话历史失败: {error}")
+
+        return (event.message_str or "").strip()[-1000:]
+
+    def _imageInfo(self, imagePaths: list[str]) -> str:
+        """把已发送图片整理成给评价模型看的信息；当前 AstrBot 文档未暴露稳定图片输入时先传路径和数量。"""
+
+        if not imagePaths:
+            return "图片已生成并发送，但本地发送路径为空。"
+
+        lines = [f"本次已发送 {len(imagePaths)} 张图片。"]
+        lines.extend(f"图片{index}本地路径：{path}" for index, path in enumerate(imagePaths, 1))
+        lines.append("如果当前聊天模型支持读取最近消息图片，请结合刚刚发出的图片本身来评价；否则请根据用户需求和图片数量自然接话。")
+        return "\n".join(lines)
 
     def _startTask(self, taskId: str, coro: Any, info: dict[str, Any]) -> None:
         """启动一个后台任务，并顺手清掉已经完成的旧任务，避免任务表无限增长。"""
@@ -532,7 +616,7 @@ class SuperDraw(Star):
         if kind == "preset":
             return self._runPresetCommand(body)
         if kind == "optimize":
-            return self.data.optimizePrompt(body)
+            return await self._optimizePromptByModel(event, body)
         return "这个命令还没有处理逻辑。"
 
     async def _acceptDraw(self, event: AstrMessageEvent, body: str = "") -> str:
@@ -551,6 +635,7 @@ class SuperDraw(Star):
         if fullReason := self._queueFullReason():
             return fullReason
 
+        request["fromTool"] = False  # 用户命令生图只发图，不追加 LLM 评价，避免群聊里显得啰嗦
         request["pointsCost"] = self.data.spendDrawPoints(request["pointKey"], request["count"], request["isPrivate"])
         taskId = self._newTaskId(request["userId"], request["prompt"])
         self._startTask(taskId, self._runDrawTask(taskId, request), self._taskInfoFromRequest(request))
