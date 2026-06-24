@@ -293,12 +293,6 @@
     "hint": "所有命令都可以在这里改成群里更顺口的词；列表里可以写多个别名，不需要带 / 前缀",
     "type": "object",
     "items": {
-      "command_prefix": {
-        "description": "命令前缀",
-        "hint": "默认 /；如果你的平台不适合斜杠，也可以改成 # 或其他前缀",
-        "type": "string",
-        "default": "/"
-      },
       "draw": {
         "description": "生图命令",
         "hint": "例如 生图、画图、生成；有图片会自动图生图，没图片会自动文生图",

@@ -92,9 +92,10 @@ class SuperDraw(Star):
     @filter.command("生图")
     @filter.command("画图")
     async def cmdDraw(self, event: AstrMessageEvent):
-        """用户发送 /生图 时触发；解析文本和图片后启动后台任务，并立刻返回任务 ID。"""
+        """用户发送 /生图 时触发；走 AstrBot 标准命令系统直接生图，不交给 LLM 工具判断。"""
 
         yield event.plain_result(await self._acceptDraw(event))
+        self._stopEvent(event)
 
     @filter.command("生图帮助")
     @filter.command("画图帮助")
@@ -102,6 +103,7 @@ class SuperDraw(Star):
         """用户发送 /生图帮助 时触发；返回最短可用说明，让群友不用翻 README。"""
 
         yield event.plain_result(self._helpText())
+        self._stopEvent(event)
 
     @filter.command("生成")
     async def cmdGenerateAlias(self, event: AstrMessageEvent):
@@ -116,6 +118,7 @@ class SuperDraw(Star):
         """用户发送 /生图队列 时触发；展示最近几个未完成任务，方便用户取消或等待。"""
 
         yield event.plain_result(self._formatQueue())
+        self._stopEvent(event)
 
     @filter.command("取消生图")
     @filter.command("取消画图")
@@ -124,6 +127,7 @@ class SuperDraw(Star):
         """用户发送 /取消生图 时触发；自动取消这个用户最近一个未完成任务，不要求复制任务 ID。"""
 
         yield event.plain_result(self._cancelLatestTask(event))
+        self._stopEvent(event)
 
     @filter.command("生图模型")
     @filter.command("画图模型")
@@ -131,12 +135,14 @@ class SuperDraw(Star):
         """用户发送 /生图模型 时触发；无参数展示模型列表，有参数切换模型。"""
 
         yield event.plain_result(self.data.chooseModel(self._commandBody(event)))
+        self._stopEvent(event)
 
     @filter.command("生图开关")
     async def cmdToggle(self, event: AstrMessageEvent):
         """用户发送 /生图开关 时触发；切换总开关，关闭时顺手取消所有生图任务。"""
 
         yield event.plain_result(self._toggleDraw())
+        self._stopEvent(event)
 
     @filter.command("生图积分")
     @filter.command("积分")
@@ -145,6 +151,7 @@ class SuperDraw(Star):
         """用户发送 /生图积分 时触发；查看自己的积分、发言次数和生图消耗。"""
 
         yield event.plain_result(self.data.formatPoints(self._pointKey(event)))
+        self._stopEvent(event)
 
     @filter.command("积分排行")
     @filter.command("积分榜")
@@ -153,6 +160,7 @@ class SuperDraw(Star):
         """用户发送 /榜 时触发；展示积分余额排行榜，鼓励群友正常聊天赚积分。"""
 
         yield event.plain_result(self.data.formatPointRank(10))
+        self._stopEvent(event)
 
     @filter.command("生图预设")
     @filter.command("画图预设")
@@ -161,6 +169,7 @@ class SuperDraw(Star):
         """用户发送 /预设 时触发；查看、添加、删除提示词预设。"""
 
         yield event.plain_result(self._runPresetCommand(self._commandBody(event)))
+        self._stopEvent(event)
 
     @filter.command("提示词优化")
     @filter.command("优化提示词")
@@ -168,6 +177,7 @@ class SuperDraw(Star):
         """用户发送 /提示词优化 时触发；调用 WebUI 选定的 AstrBot 模型改写提示词。"""
 
         yield event.plain_result(await self._optimizePromptByModel(event, self._commandBody(event)))
+        self._stopEvent(event)
 
     # ========== LLM 工具 ==========
 
@@ -405,6 +415,7 @@ class SuperDraw(Star):
         command = self._matchConfiguredCommand(event)
         if command and not self._isBuiltInCommand(command["name"]):
             await self._sendText(event, await self._runConfiguredCommand(event, command["kind"], command["body"]))
+            self._stopEvent(event)  # 自定义命令已经由插件直接处理，必须阻止后续 LLM 再把它当普通聊天理解成工具调用
             return
 
         if command or self._isCommandMessage(event):
@@ -702,13 +713,13 @@ class SuperDraw(Star):
         return "格式：/预设、/预设 查看 名称、/预设 添加 名称:内容、/预设 删除 名称"
 
     def _matchConfiguredCommand(self, event: AstrMessageEvent) -> dict[str, str] | None:
-        """从消息文本里匹配 WebUI 配置的所有命令；匹配成功返回用途、命令词和正文。"""
+        """从消息文本里匹配 WebUI 配置的命令词；前缀不再自定义，保持 AstrBot 标准斜杠命令习惯。"""
 
         text = (event.message_str or "").strip()
-        if not text.startswith(self.data.commandPrefix):
+        if not text.startswith("/"):
             return None
 
-        bodyText = text[len(self.data.commandPrefix) :].strip()
+        bodyText = text[1:].strip()
         commandMap = {
             "draw": self.data.drawCommands,
             "help": self.data.helpCommands,
@@ -761,6 +772,12 @@ class SuperDraw(Star):
         """给自定义命令发送纯文本反馈；普通命令用 yield，这里用 context 主动发消息。"""
 
         await self.context.send_message(event.unified_msg_origin, MessageChain().message(text))
+
+    def _stopEvent(self, event: AstrMessageEvent) -> None:
+        """命令已经直接回复后停止事件传播，避免 AstrBot 再进入 LLM 对话并自动调用 super_draw 工具。"""
+
+        if callable(getattr(event, "stop_event", None)):
+            event.stop_event()
 
     # ========== 文本工具 ==========
 

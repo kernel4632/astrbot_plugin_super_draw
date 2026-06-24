@@ -74,7 +74,7 @@ class Data:
         self.newUserPoints = 10  # 第一次见到用户时给的初始积分，避免新人完全不能画
         self.enablePrivatePoints = False  # 私聊是否也使用积分；默认只管群聊成员
 
-        self.commandPrefix = "/"  # 命令前缀，QQ 上保持 / 最容易被新人识别
+        self.commandPrefix = "/"  # 只用于帮助文本展示；真实触发交给 AstrBot 标准命令系统，不再从 WebUI 改前缀
         self.drawCommands = ["生图", "画图", "生成"]  # 生图入口别名，管理员可在 WebUI 改成自己群里最顺口的词
         self.helpCommands = ["生图帮助", "画图帮助"]  # 帮助命令别名
         self.queueCommands = ["生图队列", "画图队列"]  # 队列命令别名
@@ -137,8 +137,8 @@ class Data:
         self.newUserPoints = self._safeInt(points.get("new_user_points", 10), 10, 0, 10000)
         self.enablePrivatePoints = bool(points.get("enable_private_points", False))
 
-        commands = self.rawConfig.get("commands", {}) or {}  # 命令别名配置，让管理员可以在 WebUI 里把“生图”改成“生成”等词
-        self.commandPrefix = str(commands.get("command_prefix", "/") or "/").strip() or "/"
+        commands = self.rawConfig.get("commands", {}) or {}  # 命令别名配置，只改命令词；命令前缀由 AstrBot 全局命令系统负责
+        self.commandPrefix = "/"
         self.drawCommands = self._safeList(commands.get("draw", ["生图", "画图", "生成"]), ["生图", "画图", "生成"])
         self.helpCommands = self._safeList(commands.get("help", ["生图帮助", "画图帮助"]), ["生图帮助", "画图帮助"])
         self.queueCommands = self._safeList(commands.get("queue", ["生图队列", "画图队列"]), ["生图队列", "画图队列"])
@@ -426,7 +426,7 @@ class Data:
                 f"模型：{self.currentModelKey or '未配置'}",
                 f"积分用户数：{len(self.pointsByUser)}",
                 f"预设数量：{len(self.presets)}",
-                f"命令前缀：{self.commandPrefix}",
+                "命令触发：使用 AstrBot 标准命令系统，不在插件 WebUI 里单独配置前缀",
                 f"生图命令：{'、'.join(self.formatCommand(name) for name in self.drawCommands)}",
             ]
         )
@@ -476,9 +476,9 @@ class Data:
         return "你是群聊里的 Bot，刚刚亲自完成了一次生图。请结合群聊上下文、用户原始需求和生成图片信息，自然接一句短回复，不要像评审报告，不要复述任务编号，不要说自己无法看图。\n用户生图需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n生成图片信息：\n{images}\n回复要求：最多 {max_length} 字，像群友聊天一样自然，可以点评亮点、提醒如果想改哪里可以继续说。"
 
     def formatCommand(self, name: str) -> str:
-        """把命令词加上当前前缀；WebUI 改前缀后，帮助文本和 Bot 工具看到的是同一套命令。"""
+        """给帮助文本展示常见斜杠写法；真实命令前缀由 AstrBot 全局设置决定。"""
 
-        return f"{self.commandPrefix}{str(name or '').strip().lstrip('/')}"
+        return f"/{str(name or '').strip().lstrip('/')}"
 
     def formatPointRank(self, limit: int = 10) -> str:
         """格式化积分排行榜，按余额从高到低展示前几名。"""

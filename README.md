@@ -148,42 +148,43 @@
 
 主要配置都在 [`_conf_schema.json`](_conf_schema.json)。常用项如下：
 
-| 配置                                          | 说明                                       |
-| --------------------------------------------- | ------------------------------------------ |
-| `enabled`                                     | 插件总开关                                 |
-| `enable_llm_tool`                             | 是否允许 LLM 自动调用工具                  |
-| `api_providers`                               | API 供应商、Key、模型列表                  |
-| `generation.model`                            | 当前模型，格式为 `供应商/模型`             |
-| `generation.key_mode`                         | 多 Key 使用方式：`round_robin` 或 `random` |
-| `generation.max_concurrent_tasks`             | 同时真正调用接口的任务数                   |
-| `generation.max_queue_size`                   | 最大排队任务数                             |
-| `generation.max_reference_images`             | 单次最多参考图数量                         |
-| `generation.prompt_prefix`                    | 每次生图自动追加的提示词前缀               |
-| `generation.negative_prompt`                  | 每次生图自动追加的反向提示词               |
-| `points.enable_points`                        | 是否启用积分制                             |
-| `points.points_per_message`                   | 每次有效发言获得多少积分                   |
-| `points.message_point_cooldown_seconds`       | 同一用户发言加分冷却秒数                   |
-| `points.draw_cost_per_image`                  | 每次生图请求消耗多少积分                   |
-| `points.bad_request_penalty_points`           | 接口返回 400 时扣除多少积分，最低扣到 0    |
-| `points.new_user_points`                      | 新用户初始积分                             |
-| `commands.command_prefix`                     | 命令前缀，默认 `/`                         |
-| `commands.draw`                               | 生图命令别名，例如 生图、画图、生成        |
-| `commands.points`                             | 查询个人积分的命令别名                     |
-| `commands.optimize`                           | 提示词优化命令别名                         |
-| `data_tools.enable_data_tools`                | 是否允许 Bot 调用数据工具                  |
-| `prompt_optimize.enable_prompt_optimize`      | 是否启用提示词优化                         |
-| `prompt_optimize.optimize_provider_id`        | 提示词优化使用的 AstrBot 聊天模型 ID       |
-| `prompt_optimize.optimize_template`           | 提示词优化模板，使用 `{prompt}` 放原文     |
-| `prompt_optimize.enable_tool_commentary`      | 是否启用 LLM 工具生图后的自然评价          |
-| `prompt_optimize.tool_commentary_provider_id` | 生图后评价使用的 AstrBot 聊天模型 ID       |
-| `prompt_optimize.tool_commentary_template`    | 生图后评价模板，可读取上下文和图片信息     |
-| `prompt_optimize.tool_commentary_max_length`  | 生图后评价最大字数                         |
+| 配置                                          | 说明                                                                       |
+| --------------------------------------------- | -------------------------------------------------------------------------- |
+| `enabled`                                     | 插件总开关                                                                 |
+| `enable_llm_tool`                             | 是否允许 LLM 自动调用工具                                                  |
+| `api_providers`                               | API 供应商、Key、模型列表                                                  |
+| `generation.model`                            | 当前模型，格式为 `供应商/模型`                                             |
+| `generation.key_mode`                         | 多 Key 使用方式：`round_robin` 或 `random`                                 |
+| `generation.max_concurrent_tasks`             | 同时真正调用接口的任务数                                                   |
+| `generation.max_queue_size`                   | 最大排队任务数                                                             |
+| `generation.max_reference_images`             | 单次最多参考图数量                                                         |
+| `generation.prompt_prefix`                    | 每次生图自动追加的提示词前缀                                               |
+| `generation.negative_prompt`                  | 每次生图自动追加的反向提示词                                               |
+| `points.enable_points`                        | 是否启用积分制                                                             |
+| `points.points_per_message`                   | 每次有效发言获得多少积分                                                   |
+| `points.message_point_cooldown_seconds`       | 同一用户发言加分冷却秒数                                                   |
+| `points.draw_cost_per_image`                  | 每次生图请求消耗多少积分                                                   |
+| `points.bad_request_penalty_points`           | 接口返回 400 时扣除多少积分，最低扣到 0                                    |
+| `points.new_user_points`                      | 新用户初始积分                                                             |
+| `commands.draw`                               | 生图命令别名，例如 生图、画图、生成；命令前缀使用 AstrBot 全局标准命令系统 |
+| `commands.points`                             | 查询个人积分的命令别名                                                     |
+| `commands.optimize`                           | 提示词优化命令别名                                                         |
+| `data_tools.enable_data_tools`                | 是否允许 Bot 调用数据工具                                                  |
+| `prompt_optimize.enable_prompt_optimize`      | 是否启用提示词优化                                                         |
+| `prompt_optimize.optimize_provider_id`        | 提示词优化使用的 AstrBot 聊天模型 ID                                       |
+| `prompt_optimize.optimize_template`           | 提示词优化模板，使用 `{prompt}` 放原文                                     |
+| `prompt_optimize.enable_tool_commentary`      | 是否启用 LLM 工具生图后的自然评价                                          |
+| `prompt_optimize.tool_commentary_provider_id` | 生图后评价使用的 AstrBot 聊天模型 ID                                       |
+| `prompt_optimize.tool_commentary_template`    | 生图后评价模板，可读取上下文和图片信息                                     |
+| `prompt_optimize.tool_commentary_max_length`  | 生图后评价最大字数                                                         |
 
 ## HOP 架构说明
 
 ```text
 用户 /生图 或 WebUI 自定义命令
-  → main.py 接收事件，先按 commands 配置识别命令，再自动收集参考图
+  → AstrBot 标准命令系统或 main.py 自定义别名路由直接触发，不交给 LLM 判断
+  → main.py 停止事件继续传播，避免命令被后续 LLM 对话再次理解成工具调用
+  → main.py 自动收集参考图
   → data.py 检查积分、预扣积分、拼接预设，必要时按 400 规则结算积分
   → generate.py 调用 OpenAI/Gemini 生图接口
   → main.py 把图片发回聊天
