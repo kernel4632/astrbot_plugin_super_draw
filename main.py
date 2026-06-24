@@ -1,455 +1,437 @@
 """
-AstrBot 超级生图插件入口。
+AstrBot 超级生图插件 3.0.0 入口。
 
-这个文件是整个插件和 AstrBot 框架的唯一连接点。
-它接收用户命令和 LLM 工具调用，调用 generate.py 生图，再把结果发回聊天。
+这个文件是“聊天事件 → 生图指令 → 数据记录 → 图片反馈”的主线入口。
+它只做和 AstrBot 有关的事情：接收命令、收集消息里的图片、启动后台任务、把结果发回聊天。
+真正的数据在 data.py，真正调用模型在 generate.py，文件保存和图片预处理在 tool 文件夹。
 
-流程很简单：
-    用户触发 → 检查权限 → 收集提示词和参考图 → 后台调用生图接口 → 保存图片 → 发回聊天
+用户命令只保留一个核心入口：生图。
+用户是否发了图片、回复了图片、贴了图片链接，由插件自动判断；有图就是图生图，没图就是文生图。
+用户想要横图、竖图、高清、几张图，都直接写进自然语言提示词，不再学习任何参数格式。
 
-支持的命令：
-    /生图 提示词          文生图或图生图（消息里带图就自动变成图生图）
-    /生图模型 [数字]       查看或切换生图模型
-    /生图队列             查看正在运行的生图任务
-    /生图开关             开启或关闭生图功能
-    /生图取消 任务ID       取消一个正在运行的任务
-    /预设 [子命令]         查看/添加/删除预设
+推荐命令：
+    /生图 一只猫坐在窗边看雨，画成手机壁纸
+    /生图 参考这张图，做成水彩头像
+    /取消生图
+    /生图积分
+    /生图预设
+    /生图模型 2
+    /生图开关
 
 LLM 工具：
-    super_draw            LLM 自动调用的生图工具，参数更精细
+    super_draw(prompt="画一张 16:9 海报，高清，两张候选图", urls="https://...")
 """
 
 from __future__ import annotations
 
-import asyncio  # 后台任务和并发控制
-import hashlib  # 生成任务 ID
-import time  # 任务计时
+import asyncio  # 后台任务、并发锁、取消任务都依赖 asyncio
+import hashlib  # 用时间、用户、提示词生成短任务 ID
+import re  # 从文本中识别图片 URL，并对错误里的 API Key 做脱敏
+import time  # 记录任务开始时间和耗时
 from pathlib import Path
 from typing import Any
 
-import astrbot.api.message_components as Comp  # 消息组件：Image、Forward、Reply 等
-from astrbot.api import logger  # 日志
-from astrbot.api.event import AstrMessageEvent, MessageChain, filter  # 事件和消息链
-from astrbot.api.star import Context, Star  # 插件基类
-from astrbot.core.config.astrbot_config import AstrBotConfig  # 配置对象
+import astrbot.api.message_components as Comp  # AstrBot 消息组件，图片、回复、转发、@ 都从这里判断
+from astrbot.api import logger  # AstrBot 标准日志
+from astrbot.api.event import AstrMessageEvent, MessageChain, filter  # 命令入口、LLM 工具入口、消息链
+from astrbot.api.star import Context, Star  # AstrBot 插件基类
+from astrbot.core.config.astrbot_config import AstrBotConfig  # 插件配置对象
 from astrbot.core.star.star_tools import StarTools  # 获取插件数据目录
-from astrbot.core.utils.io import download_image_by_url  # 下载网络图片
+from astrbot.core.utils.io import download_image_by_url  # 下载网络参考图
 
-from .data import PluginData  # 配置和数据层
-from .generate import makeImages, closeClients  # 生图函数
-from .tool.file import cleanCache, saveImage  # 文件工具
+from .data import Data  # 插件数据中心：配置、模型、预设、限制、用量
+from .generate import closeClients, makeImages  # 生图指令：调用 OpenAI/Gemini 并返回图片 bytes
+from .tool.file import saveImage  # 文件工具：AstrBot 发本地图片时仍需要一个临时文件路径
 
 
 class SuperDraw(Star):
-    """AstrBot 生图插件主类。框架要求继承 Star，所以用类包装，但内部逻辑是过程化的。"""
+    """
+    超级生图插件主类。
+
+    AstrBot 要求插件继承 Star，所以入口必须是类；但类里的每个方法仍按 HOP 主线写成清晰动作。
+    命令方法只负责“触发”，_startDraw() 负责“指令编排”，Data 负责“数据”，_sendImages() 负责“反馈”。
+    """
 
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self.dataDir = StarTools.get_data_dir()
-        self.data = PluginData(config, self.dataDir)
-
-        # 这些属性必须无条件初始化。即使插件被禁用，/生图开关 等命令仍可能被调用，
-        # 如果 _tasks、_taskMeta 不存在，访问时会抛出 AttributeError。
-        self.cacheDir = self.dataDir / "cache"  # 生成的图片缓存在这里
-        self.semaphore = asyncio.Semaphore(self.data.maxConcurrent)  # 控制同时跑多少个生图任务
-        self._tasks: dict[str, asyncio.Task] = {}  # 后台任务表：任务ID -> Task
-        self._taskMeta: dict[str, dict[str, Any]] = {}  # 任务元信息：任务ID -> {uid, prompt, time}
-
-        if not self.data.enabled:
-            logger.info("[SuperDraw] 插件已禁用。")
-            return
+        self.dataDir = StarTools.get_data_dir()  # AstrBot 给插件的数据目录，缓存和 usage.json 都放这里
+        self.cacheDir = self.dataDir / "cache"  # 图片缓存目录，生成后的图片先保存再发送
+        self.data = Data(config, self.dataDir)  # 所有配置和用户数据集中在 Data 里
+        self.semaphore = asyncio.Semaphore(self.data.maxConcurrent)  # 控制真正同时跑的生图任务数量
+        self.tasks: dict[str, asyncio.Task[Any]] = {}  # 任务ID -> asyncio.Task，用于查看队列和取消任务
+        self.taskInfo: dict[str, dict[str, Any]] = {}  # 任务ID -> 可读元信息，用于 /生图队列 展示
 
     # ========== 生命周期 ==========
 
-    async def initialize(self):
-        """插件启动时调用。"""
+    async def initialize(self) -> None:
+        """插件启动时检查配置并创建临时图片目录；不做缓存保留和定时清理。"""
 
-        if not self.data.enabled:
-            return
+        self.cacheDir.mkdir(parents=True, exist_ok=True)
 
         if not self.data.providers:
-            logger.error("[SuperDraw] 未配置 provider，请在配置面板添加 api_providers。")
-
-        # 启动后台缓存清理循环
-        self._startBg(self._cleanLoop(), "clean")
-        logger.info(f"[SuperDraw] 启动完成，当前模型: {self.data.currentModelKey}")
-
-    async def terminate(self):
-        """插件关闭时调用。取消所有后台任务，关闭 HTTP 客户端。"""
-
-        if not self.data.enabled:
+            logger.error("[SuperDraw] 未配置可用模型，请在 api_providers 里填写 api_keys 和 available_models。")
             return
 
-        # 取消所有还在跑的任务
-        for t in list(self._tasks.values()):
-            if not t.done():
-                t.cancel()
-        if self._tasks:
-            await asyncio.gather(*self._tasks.values(), return_exceptions=True)
-        self._tasks.clear()
+        logger.info(f"[SuperDraw] 3.0.0 启动完成，当前模型：{self.data.currentModelKey}")
 
-        await closeClients()  # 关闭生图接口的 HTTP 客户端
+    async def terminate(self) -> None:
+        """插件关闭时取消所有后台任务并关闭 HTTP 客户端，防止残留连接。"""
 
-    # ========== 命令入口：/生图 ==========
+        for task in list(self.tasks.values()):
+            if not task.done():
+                task.cancel()
+
+        if self.tasks:
+            await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        self.tasks.clear()
+        self.taskInfo.clear()
+        await closeClients()
+
+    # ========== 用户命令：生图 ==========
 
     @filter.command("生图")
+    @filter.command("画图")
     async def cmdDraw(self, event: AstrMessageEvent):
-        """
-        /生图 提示词
-        用户手动生图命令。消息里带图片就自动变成图生图。
-        """
+        """用户发送 /生图 时触发；解析文本和图片后启动后台任务，并立刻返回任务 ID。"""
 
-        if not self.data.enabled:
-            return
+        yield event.plain_result(await self._acceptDraw(event))
 
-        uid = event.unified_msg_origin
+    @filter.command("生图帮助")
+    @filter.command("画图帮助")
+    async def cmdHelp(self, event: AstrMessageEvent):
+        """用户发送 /生图帮助 时触发；返回最短可用说明，让群友不用翻 README。"""
 
-        # 检查用户限制（冷却、每日次数）
-        if reason := self.data.checkUser(uid):
-            yield event.plain_result(reason)
-            return
+        yield event.plain_result(self._helpText())
 
-        # 取出提示词（命令名后面的内容）
-        raw = (event.message_str or "").strip()
-        body = raw.split(maxsplit=1)[-1] if " " in raw else ""
+    @filter.command("生成")
+    async def cmdGenerateAlias(self, event: AstrMessageEvent):
+        """默认额外支持 /生成；更多自定义词走 WebUI commands.draw 配置和群消息路由。"""
 
-        # 检查预设：如果提示词以预设名开头，就把预设内容拼上去
-        prompt, presetName = self.data.resolvePreset(body)
-
-        if not prompt:
-            yield event.plain_result("请提供提示词。")
-            return
-
-        # 从消息里收集参考图
-        imgs = await self._collectImages(event)
-
-        # 创建任务 ID，告诉用户任务已经排上了
-        tid = hashlib.md5(f"{time.time()}{uid}".encode()).hexdigest()[:8]
-        parts = [f"任务ID:{tid}"]
-        if imgs:
-            parts.append(f"参考图:{len(imgs)}")
-        if presetName:
-            parts.append(f"预设:{presetName}")
-        yield event.plain_result(" ".join(parts))
-
-        # 后台开始生图
-        self._taskMeta[tid] = {"uid": uid, "prompt": prompt[:30], "time": time.time()}
-        self._startBg(
-            self._runDrawTask(tid, uid, prompt, imgs, self.data.defaultSize, self.data.defaultQuality, self.data.saveFormat, 1),
-            tid,
-        )
-
-    # ========== 命令入口：/生图模型 ==========
-
-    @filter.command("生图模型")
-    async def cmdModel(self, event: AstrMessageEvent):
-        """
-        /生图模型         查看所有可用模型
-        /生图模型 2       切换到第 2 个模型
-        """
-
-        if not self.data.enabled:
-            return
-
-        arg = (event.message_str or "").strip().split(maxsplit=1)[-1] if " " in (event.message_str or "") else ""
-
-        if not arg:
-            yield event.plain_result(self.data.formatModelList())  # 不带参数就展示列表
-        elif arg.isdigit():
-            msg = self.data.switchModel(int(arg))  # 带数字就切换
-            yield event.plain_result(msg)
-        else:
-            yield event.plain_result("格式: /生图模型 [数字]")
-
-    # ========== 命令入口：/生图队列 ==========
+        async for result in self.cmdDraw(event):
+            yield result
 
     @filter.command("生图队列")
+    @filter.command("画图队列")
     async def cmdQueue(self, event: AstrMessageEvent):
-        """/生图队列    查看当前运行中的生图任务。"""
+        """用户发送 /生图队列 时触发；展示最近几个未完成任务，方便用户取消或等待。"""
 
-        if not self.data.enabled:
-            return
+        yield event.plain_result(self._formatQueue())
 
-        active = [k for k, t in self._tasks.items() if not t.done()]
+    @filter.command("取消生图")
+    @filter.command("取消画图")
+    @filter.command("生图取消")
+    async def cmdCancel(self, event: AstrMessageEvent):
+        """用户发送 /取消生图 时触发；自动取消这个用户最近一个未完成任务，不要求复制任务 ID。"""
 
-        if not active:
-            yield event.plain_result("当前没有运行中的生图任务。")
-            return
+        yield event.plain_result(self._cancelLatestTask(event))
 
-        lines = [f"运行中任务: {len(active)}"]
-        for tid in active[-5:]:  # 最多显示最近 5 个
-            meta = self._taskMeta.get(tid, {})
-            elapsed = int(time.time() - meta.get("time", 0))
-            lines.append(f"  {tid} | {meta.get('prompt', '?')}... | {elapsed}s")
-        yield event.plain_result("\n".join(lines))
+    @filter.command("生图模型")
+    @filter.command("画图模型")
+    async def cmdModel(self, event: AstrMessageEvent):
+        """用户发送 /生图模型 时触发；无参数展示模型列表，有参数切换模型。"""
 
-    # ========== 命令入口：/生图开关 ==========
+        yield event.plain_result(self.data.chooseModel(self._commandBody(event)))
 
     @filter.command("生图开关")
     async def cmdToggle(self, event: AstrMessageEvent):
-        """/生图开关    切换生图功能的开关状态。"""
+        """用户发送 /生图开关 时触发；切换总开关，关闭时顺手取消所有生图任务。"""
 
-        newState = not self.data.enabled
-        self.data.enabled = newState
-        self.data.rawConfig["enabled"] = newState
+        yield event.plain_result(self._toggleDraw())
 
-        try:
-            self.data.rawConfig.save_config()
-        except Exception as e:
-            logger.error(f"[SuperDraw] 保存配置失败: {e}")
+    @filter.command("生图积分")
+    @filter.command("积分")
+    @filter.command("分")
+    async def cmdPoints(self, event: AstrMessageEvent):
+        """用户发送 /生图积分 时触发；查看自己的积分、发言次数和生图消耗。"""
 
-        # 关闭时取消所有任务
-        if not newState:
-            for t in list(self._tasks.values()):
-                if not t.done():
-                    t.cancel()
+        yield event.plain_result(self.data.formatPoints(self._pointKey(event)))
 
-        yield event.plain_result(f"生图功能已{'开启' if newState else '关闭'}。")
+    @filter.command("积分排行")
+    @filter.command("积分榜")
+    @filter.command("榜")
+    async def cmdPointRank(self, event: AstrMessageEvent):
+        """用户发送 /榜 时触发；展示积分余额排行榜，鼓励群友正常聊天赚积分。"""
 
-    # ========== 命令入口：/生图取消 ==========
+        yield event.plain_result(self.data.formatPointRank(10))
 
-    @filter.command("生图取消")
-    async def cmdCancel(self, event: AstrMessageEvent):
-        """/生图取消 任务ID    取消一个正在运行的生图任务。"""
-
-        if not self.data.enabled:
-            return
-
-        arg = (event.message_str or "").strip().split(maxsplit=1)[-1] if " " in (event.message_str or "") else ""
-
-        if not arg:
-            yield event.plain_result("请提供任务ID。")
-            return
-
-        tid = arg.strip()
-
-        if tid not in self._tasks:
-            yield event.plain_result(f"任务 {tid} 不存在。")
-            return
-
-        if self._tasks[tid].done():
-            yield event.plain_result(f"任务 {tid} 已经跑完了。")
-            return
-
-        self._tasks[tid].cancel()
-        self._taskMeta.pop(tid, None)
-        yield event.plain_result(f"任务 {tid} 已取消。")
-
-    # ========== 命令入口：/预设 ==========
-
+    @filter.command("生图预设")
+    @filter.command("画图预设")
     @filter.command("预设")
     async def cmdPreset(self, event: AstrMessageEvent):
-        """
-        /预设                查看预设列表
-        /预设 查看 名称       查看预设详情
-        /预设 添加 名称:内容   添加预设
-        /预设 删除 名称       删除预设
-        """
+        """用户发送 /预设 时触发；查看、添加、删除提示词预设。"""
 
-        if not self.data.enabled:
-            return
+        yield event.plain_result(self._runPresetCommand(self._commandBody(event)))
 
-        text = (event.message_str or "").strip().split(maxsplit=1)[-1] if " " in (event.message_str or "") else ""
+    @filter.command("提示词优化")
+    @filter.command("优化提示词")
+    async def cmdOptimizePrompt(self, event: AstrMessageEvent):
+        """用户发送 /提示词优化 时触发；按 WebUI 模板把短描述整理成更完整的生图提示词。"""
 
-        # 没有参数就展示列表
-        if not text:
-            yield event.plain_result(self.data.formatPresetList())
-            return
+        yield event.plain_result(self.data.optimizePrompt(self._commandBody(event)))
 
-        # 查看预设详情
-        if text.startswith("查看 "):
-            yield event.plain_result(self.data.getPresetDetail(text[3:].strip()))
-            return
-
-        # 添加预设
-        if text.startswith("添加 "):
-            body = text[3:]
-            if ":" not in body:
-                yield event.plain_result("格式错误：/预设 添加 名称:内容")
-                return
-            name, content = body.split(":", 1)
-            if not name.strip() or not content.strip():
-                yield event.plain_result("名称和内容不能为空。")
-                return
-            self.data.addPreset(name.strip(), content.strip())
-            yield event.plain_result(f"预设已添加：{name.strip()}")
-            return
-
-        # 删除预设
-        if text.startswith("删除 "):
-            name = text[3:].strip()
-            if not name:
-                yield event.plain_result("请提供要删除的预设名称。")
-                return
-            if self.data.removePreset(name):
-                yield event.plain_result(f"预设已删除：{name}")
-            else:
-                yield event.plain_result(f"预设不存在：{name}")
-            return
-
-        yield event.plain_result("格式：/预设、/预设 查看 名称、/预设 添加 名称:内容、/预设 删除 名称")
-
-    # ========== LLM 工具入口 ==========
+    # ========== LLM 工具 ==========
 
     @filter.llm_tool(name="super_draw")
     async def llmDraw(
         self,
         event: AstrMessageEvent,
         prompt: str,
-        size: str = "auto",
-        quality: str = "auto",
-        n: int = 1,
         urls: str = "",
     ) -> str:
         """
-        当用户想要画画、生成图片、修图、P图、改图、AI绘画时调用本工具。
-        支持文生图和图生图，会自动从聊天记录中提取参考图。
+        当用户想画图、修图、P图、改图、生成头像、生成海报、复刻表情包时调用。
 
         Args:
-            prompt(string): 用户想要的图片内容描述，必填
-            size(string): 生成图片的比例，可选 auto、1:1、16:9、9:16、3:2、2:3
-            quality(string): 图片质量，可选 auto、low、medium、high
-            n(int): 生成数量，范围 1-4
-            urls(string): 参考图 URL，多个地址用英文逗号分隔
+            prompt(string): 用户想要的图片内容或修改要求，直接用自然语言写清楚比例、风格、数量、用途
+            urls(string): 参考图 URL，多个 URL 用英文逗号分隔；聊天里带图时也会自动收集
         """
 
         if not self.data.enabled:
-            return "插件禁用中。"
+            return "生图功能当前关闭。"
 
-        uid = event.unified_msg_origin
+        if not self.data.enableTool:
+            return "LLM 生图工具当前关闭，请改用 /生图 命令。"
 
-        if reason := self.data.checkUser(uid):
+        request = await self._buildRequestFromTool(event, prompt, urls)
+        if not request["prompt"]:
+            return "请提供明确的生图描述。"
+
+        if reason := self.data.checkDrawPoints(request["pointKey"], request["count"], request["isPrivate"]):
             return reason
 
-        prompt = prompt.strip()
-        if not prompt:
-            return "请提供 prompt。"
+        if fullReason := self._queueFullReason():
+            return fullReason
 
-        # 收集参考图：先从 urls 参数里取，再从聊天上下文里取
-        imgs: list[bytes] = []
-        if urls:
-            for u in urls.split(","):
-                if b := await self._downloadImage(u.strip()):
-                    imgs.append(b)
-        imgs.extend(await self._collectImages(event))  # 再从消息里收集
+        request["pointsCost"] = self.data.spendDrawPoints(request["pointKey"], request["count"], request["isPrivate"])
+        taskId = self._newTaskId(request["userId"], request["prompt"])
+        self._startTask(taskId, self._runDrawTask(taskId, request), self._taskInfoFromRequest(request))
+        return self._acceptedText(taskId, request)
 
-        # 归一化参数
-        size = size or self.data.defaultSize
-        quality = quality or self.data.defaultQuality
-        n = max(1, min(4, int(n)))
-
-        # 后台开始生图
-        tid = hashlib.md5(f"{time.time()}{uid}".encode()).hexdigest()[:8]
-        self._taskMeta[tid] = {"uid": uid, "prompt": prompt[:30], "time": time.time()}
-        self._startBg(
-            self._runDrawTask(tid, uid, prompt, imgs, size, quality, self.data.saveFormat, n),
-            tid,
-        )
-
-        return f"已启动生图任务(ID:{tid})，稍后会把图片发到聊天里。"
-
-    # ========== 核心流程：执行生图任务 ==========
-
-    async def _runDrawTask(self, tid: str, uid: str, prompt: str, imgs: list[bytes], size: str, quality: str, fmt: str, n: int):
+    @filter.llm_tool(name="super_draw_data")
+    async def llmDataTool(
+        self,
+        event: AstrMessageEvent,
+        action: str,
+        user_key: str = "",
+        delta: int = 0,
+        reason: str = "",
+    ) -> str:
         """
-        后台执行生图的完整流程：调用接口 → 保存图片 → 发回消息。
-        用信号量控制并发，避免同时跑太多任务。
+        当用户或管理员想让 Bot 查询/修改生图插件数据时调用。
+
+        Args:
+            action(string): 操作名，可选 summary、status、my_points、user_points、change_points、rank、presets
+            user_key(string): 目标积分用户键；为空时默认操作当前会话发送者
+            delta(number): change_points 时要增加或扣除的积分，正数加分，负数扣分
+            reason(string): 修改积分的原因，会写进返回文本方便审计
         """
+
+        if not self.data.enableDataTools:
+            return "生图数据工具当前关闭。"
+
+        targetKey = user_key.strip() or self._pointKey(event)
+        cleanAction = action.strip().lower()
+        if cleanAction == "summary":
+            return self.data.formatAllDataSummary()
+        if cleanAction == "status":
+            return self._formatStatus()
+        if cleanAction == "my_points":
+            return self.data.formatPoints(self._pointKey(event))
+        if cleanAction == "user_points":
+            return str(self.data.getUserData(targetKey))
+        if cleanAction == "change_points":
+            return self.data.changePoints(targetKey, int(delta), reason)
+        if cleanAction == "rank":
+            return self.data.formatPointRank(10)
+        if cleanAction == "presets":
+            return self.data.formatPresetList()
+        return "未知操作。可用 action：summary、status、my_points、user_points、change_points、rank、presets。"
+
+    @filter.llm_tool(name="super_draw_optimize_prompt")
+    async def llmOptimizePrompt(self, event: AstrMessageEvent, prompt: str) -> str:
+        """
+        当用户想先优化生图提示词、但还没要求立刻画图时调用。
+
+        Args:
+            prompt(string): 用户原始想法或短提示词
+        """
+
+        return self.data.optimizePrompt(prompt)
+
+    # ========== 生图指令编排 ==========
+
+    async def _runDrawTask(self, taskId: str, request: dict[str, Any]) -> None:
+        """后台执行一次完整生图：等并发名额 → 调接口 → 记录用量 → 保存图片 → 发回聊天。"""
 
         async with self.semaphore:
-            # 在控制台打印当前使用的生图模型，方便排查问题和确认调用链路
-            logger.info(f"[SuperDraw] 开始生图 | 模型: {self.data.currentModelKey} | 提示词: {prompt[:40]}...")
-
             try:
-                # 调用生图接口
-                result = await makeImages(self.data.providers, self.data.currentProviderIdx, prompt, imgs, size, quality, n)
+                logger.info(f"[SuperDraw] 开始任务 {taskId} | {self.data.currentModelKey} | {request['prompt'][:60]}")
+                imageBytesList = await makeImages(self.data.providers, self.data.currentProviderIndex, request["prompt"], request["images"], request["size"], request["quality"], request["count"], self.data.getNextKey)
+                self.data.recordUsage(request["userId"], len(imageBytesList))
+                await self._sendImages(request["userId"], taskId, imageBytesList, request)
+            except asyncio.CancelledError:
+                self.data.refundPoints(request["pointKey"], int(request.get("pointsCost", 0)))
+                await self.context.send_message(request["userId"], MessageChain().message(f"生图任务 {taskId} 已取消，积分已退回。"))
+            except Exception as error:
+                pointsCost = int(request.get("pointsCost", 0))  # 生图排队前已经预扣的积分，失败时要按错误类型重新结算
+                logger.error(f"[SuperDraw] 任务 {taskId} 失败: {error}")
+                if self._isBadRequestError(error):
+                    penalty = self.data.settleBadRequestPoints(request["pointKey"], pointsCost)
+                    await self.context.send_message(request["userId"], MessageChain().message(f"生图失败（任务 {taskId}）：接口返回 400，通常是提示词或内容安全限制。本次按规则扣除 {penalty} 分，积分最低不会低于 0。\n{self._safeError(error)}"))
+                    return
 
-                # 记录用量
-                self.data.recordUsage(uid)
-
-                # 保存图片并发回消息
-                chain = MessageChain()
-                for imageBytes in result:
-                    path = saveImage(self.cacheDir, imageBytes, fmt)
-                    if path:
-                        chain.file_image(path)
-                await self.context.send_message(uid, chain)
-
-            except Exception as e:
-                logger.error(f"[SuperDraw] 生图失败: {e}")
-                await self.context.send_message(uid, MessageChain().message(f"生图失败: {e}"))
-
+                self.data.refundPoints(request["pointKey"], pointsCost)
+                await self.context.send_message(request["userId"], MessageChain().message(f"生图失败（任务 {taskId}），积分已退回：{self._safeError(error)}"))
             finally:
-                self._taskMeta.pop(tid, None)  # 清理任务元信息
+                self.taskInfo.pop(taskId, None)
+
+    async def _sendImages(self, targetId: str, taskId: str, imageBytesList: list[bytes], request: dict[str, Any]) -> None:
+        """把模型返回的图片发回聊天；AstrBot 需要文件路径时，只保存必要的临时发送文件。"""
+
+        chain = MessageChain().message(f"生图完成：{taskId}\n模型：{self.data.currentModelKey}")
+        for imageBytes in imageBytesList:
+            path = saveImage(self.cacheDir, imageBytes, self.data.saveFormat)
+            if path:
+                chain.file_image(path)
+
+        await self.context.send_message(targetId, chain)
+
+    def _startTask(self, taskId: str, coro: Any, info: dict[str, Any]) -> None:
+        """启动一个后台任务，并顺手清掉已经完成的旧任务，避免任务表无限增长。"""
+
+        for oldId, oldTask in list(self.tasks.items()):
+            if oldTask.done():
+                self.tasks.pop(oldId, None)
+                self.taskInfo.pop(oldId, None)
+
+        self.taskInfo[taskId] = {**info, "start": time.time()}
+        self.tasks[taskId] = asyncio.create_task(coro)
+
+    # ========== 发言积分 ==========
+
+    @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
+    async def onGroupMessage(self, event: AstrMessageEvent):
+        """
+        群消息统一入口：先看是不是 WebUI 自定义命令；不是命令才按普通发言加积分。
+
+        AstrBot 的 @filter.command 适合固定默认命令；用户要求“WebUI 能改全部指令”时，就需要在普通消息钩子里自己路由。
+        为避免默认命令被 @filter.command 和这里重复处理，这里只处理 WebUI 新增的别名，默认内置命令仍交给上面的命令函数。
+        """
+
+        command = self._matchConfiguredCommand(event)
+        if command and not self._isBuiltInCommand(command["name"]):
+            await self._sendText(event, await self._runConfiguredCommand(event, command["kind"], command["body"]))
+            return
+
+        if command or self._isCommandMessage(event):
+            return
+
+        gained = self.data.addTalkPoint(self._pointKey(event), self._displayName(event))
+        if gained and self.data.debugMode:
+            logger.info(f"[SuperDraw] 发言积分 +{gained}: {self._pointKey(event)}")
+
+    # ========== 请求构建 ==========
+
+    async def _buildRequestFromEvent(self, event: AstrMessageEvent, body: str = "") -> dict[str, Any]:
+        """从用户命令里构建生图请求：命令文本负责提示词和参数，消息组件负责参考图。"""
+
+        text = body if body else self._commandBody(event)
+        prompt, presetName = self.data.resolvePreset(text)
+        images = await self._collectImages(event)
+
+        return {
+            "userId": event.unified_msg_origin,
+            "pointKey": self._pointKey(event),
+            "isPrivate": self._isPrivate(event),
+            "prompt": prompt,
+            "preset": presetName,
+            "images": images[: self.data.maxReferenceImages],
+            "size": self.data.defaultSize,
+            "quality": self.data.defaultQuality,
+            "count": 1,
+        }
+
+    async def _buildRequestFromTool(self, event: AstrMessageEvent, prompt: str, urls: str) -> dict[str, Any]:
+        """从 LLM 工具参数构建生图请求；比例、质量、数量都让 LLM 写进自然语言 prompt。"""
+
+        images: list[bytes] = []
+        for url in [item.strip() for item in urls.split(",") if item.strip()]:
+            if imageBytes := await self._downloadImage(url):
+                images.append(imageBytes)
+        images.extend(await self._collectImages(event))
+
+        return {
+            "userId": event.unified_msg_origin,
+            "pointKey": self._pointKey(event),
+            "isPrivate": self._isPrivate(event),
+            "prompt": self.data.buildPrompt(prompt.strip()),
+            "preset": None,
+            "images": images[: self.data.maxReferenceImages],
+            "size": self.data.defaultSize,
+            "quality": self.data.defaultQuality,
+            "count": 1,
+        }
+
+    def _taskInfoFromRequest(self, request: dict[str, Any]) -> dict[str, Any]:
+        """把完整请求压缩成适合 /生图队列 和 /取消生图 使用的小字典。"""
+
+        return {"userId": request["userId"], "pointKey": request["pointKey"], "prompt": request["prompt"][:40], "count": request["count"], "size": request["size"], "quality": request["quality"]}
 
     # ========== 参考图收集 ==========
 
     async def _collectImages(self, event: AstrMessageEvent) -> list[bytes]:
-        """
-        从消息中收集所有参考图。
-        会检查：消息里的图片、被回复的消息、合并转发消息、@某人的头像、正文里的图片 URL。
-        """
+        """从消息图片、回复、合并转发、@头像、文本 URL 中收集参考图。"""
 
         if not event.message_obj or not event.message_obj.message:
             return []
 
-        imgs: list[bytes] = []
+        images: list[bytes] = []
+        for index, component in enumerate(event.message_obj.message):
+            if index == 0 and isinstance(component, Comp.At):
+                continue  # 群聊里开头 @机器人 是命令触发，不应把机器人头像当参考图
+            images.extend(await self._extractImagesFromComponent(component, event))
 
-        # 遍历消息组件，提取图片
-        for i, comp in enumerate(event.message_obj.message):
-            if i == 0 and isinstance(comp, Comp.At):  # 跳过开头的 @机器人
-                continue
-            imgs.extend(await self._extractFromComp(comp, event))
+        for url in self._imageUrls(event.message_str or ""):
+            if imageBytes := await self._downloadImage(url):
+                images.append(imageBytes)
 
-        # 正文里的 HTTP(S) 图片 URL 也当参考图
-        text = event.message_str or ""
-        for token in text.split():
-            if token.startswith(("http://", "https://")) and not token.startswith("https://q4.qlogo.cn"):
-                if b := await self._downloadImage(token):
-                    imgs.append(b)
+        return images[: self.data.maxReferenceImages]
 
-        return imgs
+    async def _extractImagesFromComponent(self, component: Any, event: AstrMessageEvent | None = None) -> list[bytes]:
+        """从单个消息组件里提取图片；遇到回复和转发会继续往里面找。"""
 
-    async def _extractFromComp(self, comp: Any, event: AstrMessageEvent | None = None) -> list[bytes]:
-        """从单个消息组件里提取图片。递归处理转发、回复等嵌套结构。"""
+        if isinstance(component, Comp.Image):
+            return [imageBytes] if (imageBytes := await self._downloadImage(component.url or component.file)) else []
 
-        # 普通图片
-        if isinstance(comp, Comp.Image):
-            return [b] if (b := await self._downloadImage(comp.url or comp.file)) else []
+        if isinstance(component, Comp.Forward):
+            return await self._extractImagesFromForward(component, event)
 
-        # 合并转发消息：需要调用 bot API 拉取内容
-        if isinstance(comp, Comp.Forward):
-            return await self._extractFromForward(comp, event)
-
-        # 转发节点列表
-        if isinstance(comp, Comp.Nodes):
-            result = []
-            for node in comp.nodes:
-                result.extend(await self._extractFromComp(node, event))
+        if isinstance(component, Comp.Nodes):
+            result: list[bytes] = []
+            for node in component.nodes:
+                result.extend(await self._extractImagesFromComponent(node, event))
             return result
 
-        # 单个转发节点
-        if isinstance(comp, Comp.Node):
-            result = []
-            for item in comp.content or []:
-                result.extend(await self._extractFromComp(item, event))
+        if isinstance(component, Comp.Node):
+            result: list[bytes] = []
+            for item in component.content or []:
+                result.extend(await self._extractImagesFromComponent(item, event))
             return result
 
-        # 回复消息：从被回复的消息链里提取图片
-        if isinstance(comp, Comp.Reply) and comp.chain:
-            result = []
-            for item in comp.chain:
-                result.extend(await self._extractFromComp(item, event))
+        if isinstance(component, Comp.Reply) and component.chain:
+            result: list[bytes] = []
+            for item in component.chain:
+                result.extend(await self._extractImagesFromComponent(item, event))
             return result
 
-        # @某人：把他的头像当参考图（@在开头的已经跳过了，这里只处理正文里的 @）
-        if isinstance(comp, Comp.At) and str(getattr(comp, "qq", "")) not in ("", "all"):
-            return [b] if (b := await self._downloadImage(f"https://q4.qlogo.cn/headimg_dl?dst_uin={comp.qq}&spec=640")) else []
+        if isinstance(component, Comp.At) and str(getattr(component, "qq", "")) not in ("", "all"):
+            avatarUrl = f"https://q4.qlogo.cn/headimg_dl?dst_uin={component.qq}&spec=640"
+            return [imageBytes] if (imageBytes := await self._downloadImage(avatarUrl)) else []
 
         return []
 
-    async def _extractFromForward(self, comp: Comp.Forward, event: AstrMessageEvent | None) -> list[bytes]:
-        """从合并转发消息中提取图片。需要调用 bot 的 get_forward_msg 接口拉取完整内容。"""
+    async def _extractImagesFromForward(self, component: Comp.Forward, event: AstrMessageEvent | None) -> list[bytes]:
+        """从合并转发消息中拉取原始节点，再提取里面的图片 URL 或 file。"""
 
         if event is None:
             return []
@@ -458,95 +440,438 @@ class SuperDraw(Star):
         if not bot or not callable(getattr(bot, "call_action", None)):
             return []
 
-        # 获取转发消息 ID
-        forwardId = comp.id or self._findForwardId(event)
+        forwardId = component.id or self._findForwardId(event)
         if not forwardId:
             return []
 
-        # 调用 bot API 拉取转发内容
         try:
-            resp = await bot.call_action("get_forward_msg", id=forwardId)
-            nodes = resp.get("messages") or resp.get("data", {}).get("messages") or []
-        except Exception as e:
-            logger.warning(f"[SuperDraw] 拉取合并转发消息失败: {e}")
+            response = await bot.call_action("get_forward_msg", id=forwardId)
+            nodes = response.get("messages") or response.get("data", {}).get("messages") or []
+        except Exception as error:
+            logger.warning(f"[SuperDraw] 拉取合并转发失败: {error}")
             return []
 
-        # 从每个节点的内容里提取图片
-        imgs: list[bytes] = []
+        images: list[bytes] = []
         for node in nodes:
             content = node.get("content") or node.get("message") or []
-            if not isinstance(content, list):
-                continue
-            for seg in content:
-                if seg.get("type") != "image":
-                    continue
-                url = seg.get("data", {}).get("url") or seg.get("data", {}).get("file")
-                if b := await self._downloadImage(url):
-                    imgs.append(b)
-
-        return imgs
+            if isinstance(content, str):
+                content = self._segmentsFromText(content)
+            for segment in content if isinstance(content, list) else []:
+                url = self._imageUrlFromSegment(segment)
+                if url and (imageBytes := await self._downloadImage(url)):
+                    images.append(imageBytes)
+        return images
 
     def _findForwardId(self, event: AstrMessageEvent) -> str:
-        """从原始消息中找合并转发的 ID（有些平台不在 Forward 组件里提供 ID，要从原始数据里挖）。"""
+        """从平台原始消息里寻找合并转发 ID；有些适配器不会直接填在 Comp.Forward.id 上。"""
 
-        msgObj = getattr(event, "message_obj", None)
-        raw = getattr(msgObj, "raw_message", None) if msgObj else None
-        if raw is None:
-            return ""
+        messageObj = getattr(event, "message_obj", None)
+        raw = getattr(messageObj, "raw_message", None) if messageObj else None
+        segments = getattr(raw, "message", None) if hasattr(raw, "message") else (raw.get("message", []) if isinstance(raw, dict) else [])
 
-        segs = getattr(raw, "message", None) if hasattr(raw, "message") else raw.get("message", [])
-        for seg in segs or []:
-            if seg.get("type") == "forward":
-                return seg.get("data", {}).get("id") or seg.get("data", {}).get("resid") or ""
+        for segment in segments or []:
+            if segment.get("type") == "forward":
+                return segment.get("data", {}).get("id") or segment.get("data", {}).get("resid") or ""
         return ""
 
-    # ========== 图片下载 ==========
+    def _segmentsFromText(self, text: str) -> list[dict[str, Any]]:
+        """部分平台把转发内容给成字符串，这里只从字符串里提取图片 URL，转成统一 segment 结构。"""
+
+        return [{"type": "image", "data": {"url": url}} for url in self._imageUrls(text)]
+
+    def _imageUrlFromSegment(self, segment: Any) -> str:
+        """从 OneBot 风格 segment 中读取图片地址，读不到就返回空字符串。"""
+
+        if not isinstance(segment, dict) or segment.get("type") != "image":
+            return ""
+        data = segment.get("data", {}) or {}
+        return data.get("url") or data.get("file") or ""
 
     async def _downloadImage(self, source: str | None) -> bytes | None:
-        """
-        把 URL 或本地路径转成图片字节。
-        网络图片会先下载到缓存目录再读取；本地文件直接读取。
-        """
+        """把网络 URL 或本地文件路径读取成 bytes；失败返回 None，让调用方跳过这张参考图。"""
 
         if not source:
             return None
 
         try:
-            # 本地文件直接读
-            if not source.startswith("http"):
-                p = Path(source)
-                return p.read_bytes() if p.is_file() else None
+            if not str(source).startswith(("http://", "https://")):
+                path = Path(source)
+                return path.read_bytes() if path.is_file() else None
 
-            # 网络图片先下载到缓存目录
-            fn = str(self.cacheDir / f"ref_{hashlib.md5(source.encode()).hexdigest()[:8]}")
-            downloaded = await download_image_by_url(source, path=fn)
-            if downloaded:
-                return Path(downloaded).read_bytes()
+            fileName = self.cacheDir / f"ref_{hashlib.md5(source.encode()).hexdigest()[:12]}"
+            downloaded = await download_image_by_url(source, path=str(fileName))
+            return Path(downloaded).read_bytes() if downloaded else None
+        except Exception as error:
+            if self.data.debugMode:
+                logger.warning(f"[SuperDraw] 下载参考图失败 {source}: {error}")
+            return None
 
-        except Exception:
-            pass
+    # ========== 自定义命令路由 ==========
 
+    async def _runConfiguredCommand(self, event: AstrMessageEvent, kind: str, body: str) -> str:
+        """执行 WebUI 配出来的命令；kind 是命令用途，body 是去掉命令词后的正文。"""
+
+        if kind == "draw":
+            return await self._acceptDraw(event, body)
+        if kind == "help":
+            return self._helpText()
+        if kind == "status":
+            return self._formatStatus()
+        if kind == "queue":
+            return self._formatQueue()
+        if kind == "cancel":
+            return self._cancelLatestTask(event)
+        if kind == "model":
+            return self.data.chooseModel(body)
+        if kind == "toggle":
+            return self._toggleDraw()
+        if kind == "points":
+            return self.data.formatPoints(self._pointKey(event))
+        if kind == "rank":
+            return self.data.formatPointRank(10)
+        if kind == "preset":
+            return self._runPresetCommand(body)
+        if kind == "optimize":
+            return self.data.optimizePrompt(body)
+        return "这个命令还没有处理逻辑。"
+
+    async def _acceptDraw(self, event: AstrMessageEvent, body: str = "") -> str:
+        """统一受理一次生图；默认命令和 WebUI 自定义命令都走这里，避免两套扣分和排队逻辑。"""
+
+        if not self.data.enabled:
+            return "生图功能当前关闭。管理员可发送开关命令重新开启。"
+
+        request = await self._buildRequestFromEvent(event, body)
+        if not request["prompt"]:
+            return self._helpText()
+
+        if reason := self.data.checkDrawPoints(request["pointKey"], request["count"], request["isPrivate"]):
+            return reason
+
+        if fullReason := self._queueFullReason():
+            return fullReason
+
+        request["pointsCost"] = self.data.spendDrawPoints(request["pointKey"], request["count"], request["isPrivate"])
+        taskId = self._newTaskId(request["userId"], request["prompt"])
+        self._startTask(taskId, self._runDrawTask(taskId, request), self._taskInfoFromRequest(request))
+        return self._acceptedText(taskId, request)
+
+    def _formatStatus(self) -> str:
+        """把插件开关、模型和队列状态整理成文本；默认命令、自定义命令、LLM 数据工具共用。"""
+
+        running = sum(1 for task in self.tasks.values() if not task.done())
+        waiting = max(0, running - self.data.maxConcurrent)
+        return self.data.formatStatus(running, waiting)
+
+    def _formatQueue(self) -> str:
+        """把当前队列整理成文本；命令函数和自定义路由共用同一份展示。"""
+
+        activeIds = [taskId for taskId, task in self.tasks.items() if not task.done() and taskId != "clean"]
+        if not activeIds:
+            return "当前没有运行中的生图任务。"
+
+        lines = [f"运行中任务：{len(activeIds)}"]
+        for taskId in activeIds[-8:]:
+            info = self.taskInfo.get(taskId, {})
+            seconds = int(time.time() - float(info.get("start", time.time())))
+            lines.append(f"  {taskId} | {info.get('count', 1)}张 | {seconds}s | {info.get('prompt', '?')}...")
+        return "\n".join(lines)
+
+    def _cancelLatestTask(self, event: AstrMessageEvent) -> str:
+        """取消发送者最近的任务；不需要任务 ID，手机端只打一条命令就够。"""
+
+        taskId = self._latestTaskIdForUser(self._pointKey(event))
+        if not taskId:
+            return "你当前没有正在运行的生图任务。"
+
+        task = self.tasks.get(taskId)
+        if task and not task.done():
+            task.cancel()
+            self.taskInfo.pop(taskId, None)
+            return "已取消你最近的生图任务，积分会自动退回。"
+        return "你最近的生图任务已经结束。"
+
+    def _toggleDraw(self) -> str:
+        """切换生图总开关；关闭时顺手取消所有未完成任务。"""
+
+        newState = not self.data.enabled
+        self.data.setEnabled(newState)
+        if not newState:
+            for taskId, task in list(self.tasks.items()):
+                if taskId != "clean" and not task.done():
+                    task.cancel()
+        return f"生图功能已{'开启' if newState else '关闭'}。"
+
+    def _runPresetCommand(self, body: str) -> str:
+        """执行预设命令；WebUI 自定义别名和默认 /预设 都使用同一份逻辑。"""
+
+        if not body:
+            return self.data.formatPresetList()
+        if body.startswith("查看 "):
+            return self.data.getPresetDetail(body[3:].strip())
+        if body.startswith("添加 "):
+            return self._addPreset(body[3:].strip())
+        if body.startswith("删除 "):
+            name = body[3:].strip()
+            return f"预设已删除：{name}" if self.data.removePreset(name) else f"预设不存在：{name}"
+        return "格式：/预设、/预设 查看 名称、/预设 添加 名称:内容、/预设 删除 名称"
+
+    def _matchConfiguredCommand(self, event: AstrMessageEvent) -> dict[str, str] | None:
+        """从消息文本里匹配 WebUI 配置的所有命令；匹配成功返回用途、命令词和正文。"""
+
+        text = (event.message_str or "").strip()
+        if not text.startswith(self.data.commandPrefix):
+            return None
+
+        bodyText = text[len(self.data.commandPrefix) :].strip()
+        commandMap = {
+            "draw": self.data.drawCommands,
+            "help": self.data.helpCommands,
+            "queue": self.data.queueCommands,
+            "cancel": self.data.cancelCommands,
+            "model": self.data.modelCommands,
+            "toggle": self.data.toggleCommands,
+            "points": self.data.pointsCommands,
+            "rank": self.data.rankCommands,
+            "preset": self.data.presetCommands,
+            "optimize": self.data.optimizeCommands,
+        }
+        for kind, names in commandMap.items():
+            for name in sorted(names, key=len, reverse=True):
+                if bodyText == name or bodyText.startswith(f"{name} "):
+                    return {"kind": kind, "name": name, "body": bodyText[len(name) :].strip()}
         return None
 
-    # ========== 后台任务管理 ==========
+    def _isBuiltInCommand(self, commandName: str) -> bool:
+        """判断命令词是不是写在 @filter.command 里的默认命令；默认命令不在消息钩子里重复执行。"""
 
-    def _startBg(self, coro, name: str):
-        """启动一个后台协程任务，并清理已完成的旧任务。"""
+        return commandName in {
+            "生图",
+            "画图",
+            "生成",
+            "生图帮助",
+            "画图帮助",
+            "生图队列",
+            "画图队列",
+            "取消生图",
+            "取消画图",
+            "生图取消",
+            "生图模型",
+            "画图模型",
+            "生图开关",
+            "生图积分",
+            "积分",
+            "分",
+            "积分排行",
+            "积分榜",
+            "榜",
+            "生图预设",
+            "画图预设",
+            "预设",
+            "提示词优化",
+            "优化提示词",
+        }
 
-        # 清理已完成的任务，防止 _tasks 字典无限增长
-        for done in [k for k, t in self._tasks.items() if t.done()]:
-            del self._tasks[done]
+    async def _sendText(self, event: AstrMessageEvent, text: str) -> None:
+        """给自定义命令发送纯文本反馈；普通命令用 yield，这里用 context 主动发消息。"""
 
-        self._tasks[name] = asyncio.create_task(coro)
+        await self.context.send_message(event.unified_msg_origin, MessageChain().message(text))
 
-    async def _cleanLoop(self):
-        """后台循环：定期清理缓存目录里的旧文件。"""
+    # ========== 文本工具 ==========
 
-        while True:
-            try:
-                await cleanCache(self.cacheDir, self.data.maxCacheCount)
-                await asyncio.sleep(self.data.cleanupIntervalHours * 3600)  # 按配置的小时数等待
-            except asyncio.CancelledError:
-                break  # 插件关闭时正常退出
-            except Exception:
-                await asyncio.sleep(60)  # 出错了等一分钟再试
+    def _commandBody(self, event: AstrMessageEvent) -> str:
+        """去掉命令名，只保留用户真正输入的内容，例如 /生图 猫 会得到 猫。"""
+
+        text = (event.message_str or "").strip()
+        return text.split(maxsplit=1)[1].strip() if " " in text else ""
+
+    def _pointKey(self, event: AstrMessageEvent) -> str:
+        """生成积分用户键；群聊里同一个群同一个人一份积分，私聊里按会话单独记。"""
+
+        senderId = self._senderId(event)
+        return f"{event.unified_msg_origin}:{senderId}" if senderId else event.unified_msg_origin
+
+    def _senderId(self, event: AstrMessageEvent) -> str:
+        """尽量读取发送者 ID；AstrBot 提供 get_sender_id()，没有时从原始消息兜底读取。"""
+
+        if callable(getattr(event, "get_sender_id", None)):
+            return str(event.get_sender_id() or "")
+
+        messageObj = getattr(event, "message_obj", None)
+        raw = getattr(messageObj, "raw_message", None) if messageObj else None
+        if isinstance(raw, dict):
+            return str(raw.get("user_id") or raw.get("sender", {}).get("user_id") or "")
+        return str(getattr(raw, "user_id", "") or "")
+
+    def _displayName(self, event: AstrMessageEvent) -> str:
+        """尽量读取群友昵称；排行榜显示昵称比显示一长串 ID 更适合手机 QQ。"""
+
+        if callable(getattr(event, "get_sender_name", None)):
+            return str(event.get_sender_name() or "")
+
+        messageObj = getattr(event, "message_obj", None)
+        raw = getattr(messageObj, "raw_message", None) if messageObj else None
+        if isinstance(raw, dict):
+            sender = raw.get("sender", {}) or {}
+            return str(sender.get("card") or sender.get("nickname") or raw.get("user_id") or "群友")
+        return str(getattr(raw, "sender", "") or self._senderId(event) or "群友")
+
+    def _isCommandMessage(self, event: AstrMessageEvent) -> bool:
+        """判断消息是否是插件命令；命令不算普通发言，避免用户刷命令套积分。"""
+
+        text = (event.message_str or "").strip()
+        if self._matchConfiguredCommand(event):
+            return True
+
+        names = [
+            "生图",
+            "画图",
+            "生成",
+            "生图队列",
+            "画图队列",
+            "取消生图",
+            "取消画图",
+            "生图取消",
+            "生图模型",
+            "画图模型",
+            "生图预设",
+            "画图预设",
+            "预设",
+            "生图积分",
+            "积分",
+            "分",
+            "积分排行",
+            "积分榜",
+            "榜",
+            "生图帮助",
+            "画图帮助",
+            "生图开关",
+            "提示词优化",
+            "优化提示词",
+        ]
+        commandNames = tuple(self.data.formatCommand(name) for name in names)
+        return text.startswith(commandNames)
+
+    def _latestTaskIdForUser(self, pointKey: str) -> str:
+        """找到这个用户最近一个未完成生图任务；/取消生图 不需要用户复制任务 ID。"""
+
+        for taskId, task in reversed(list(self.tasks.items())):
+            info = self.taskInfo.get(taskId, {})
+            if info.get("pointKey") == pointKey and not task.done():
+                return taskId
+        return ""
+
+    def _imageUrls(self, text: str) -> list[str]:
+        """从文本中提取 http/https URL；头像接口和明显非图片链接不强行过滤，下载失败会自动跳过。"""
+
+        return [url.rstrip("，。,.）)") for url in re.findall(r"https?://[^\s]+", text or "")]
+
+    def _isPrivate(self, event: AstrMessageEvent) -> bool:
+        """尽量判断当前事件是否来自私聊；不同平台字段不同，判断不到时按群聊处理更安全。"""
+
+        messageObj = getattr(event, "message_obj", None)
+        raw = getattr(messageObj, "raw_message", None) if messageObj else None
+        messageType = getattr(raw, "message_type", "") if raw is not None else ""
+        if isinstance(raw, dict):
+            messageType = raw.get("message_type", "") or raw.get("detail_type", "")
+        return str(messageType).lower() in {"private", "friend", "direct"}
+
+    def _newTaskId(self, userId: str, prompt: str) -> str:
+        """用用户、时间、提示词生成 8 位任务 ID，短到适合聊天里复制，重复概率也足够低。"""
+
+        seed = f"{time.time()}|{userId}|{prompt[:80]}"
+        return hashlib.md5(seed.encode("utf-8")).hexdigest()[:8]
+
+    def _latestTaskIdForUser(self, pointKey: str) -> str:
+        """找到这个用户最近一个未完成生图任务；/取消生图 不需要用户复制任务 ID。"""
+
+        for taskId, task in reversed(list(self.tasks.items())):
+            info = self.taskInfo.get(taskId, {})
+            if taskId != "clean" and info.get("pointKey") == pointKey and not task.done():
+                return taskId
+        return ""
+
+    def _queueFullReason(self) -> str:
+        """检查后台任务表是否已满；满了就返回原因，没满返回空字符串。"""
+
+        running = sum(1 for taskId, task in self.tasks.items() if taskId != "clean" and not task.done())
+        return f"当前生图队列已满（{running}/{self.data.maxQueueSize}），请稍后再试。" if running >= self.data.maxQueueSize else ""
+
+    def _latestTaskIdForUser(self, pointKey: str) -> str:
+        """找到这个用户最近一个未完成生图任务；/取消生图 不需要用户复制任务 ID。"""
+
+        for taskId, task in reversed(list(self.tasks.items())):
+            info = self.taskInfo.get(taskId, {})
+            if info.get("pointKey") == pointKey and not task.done():
+                return taskId
+        return ""
+
+    def _acceptedText(self, taskId: str, request: dict[str, Any]) -> str:
+        """任务受理后返回给用户的短提示，告诉他任务 ID、图片数量和参考图数量。"""
+
+        parts = [f"已开始生图：{taskId}"]
+        if request.get("preset"):
+            parts.append(f"预设：{request['preset']}")
+        if request.get("images"):
+            parts.append(f"已自动参考图片：{len(request['images'])}张")
+        parts.append(f"发送 {self.data.formatCommand(self.data.cancelCommands[0])} 可取消你最近的任务。")
+        return "\n".join(parts)
+
+    def _isBadRequestError(self, error: Exception) -> bool:
+        """
+        判断这次失败是不是 400 类错误；这类错误通常代表提示词违规或请求内容不被接口接受，需要按规则扣分。
+
+        不同 SDK 暴露错误的方式不同：OpenAI 可能有 status_code 字段，也可能只把 “Error code: 400” 写进文本。
+        所以这里同时看属性和文本，让插件面对多家兼容接口时更稳。
+        """
+
+        statusCode = getattr(error, "status_code", None) or getattr(error, "status", None)
+        if str(statusCode) == "400":
+            return True
+
+        text = str(error).lower()
+        return "error code: 400" in text or "status code: 400" in text or "content_policy_violation" in text
+
+    def _safeError(self, error: Exception) -> str:
+        """把异常整理成适合发到群里的短文本，避免泄露 API Key 或输出超长堆栈。"""
+
+        text = str(error).replace("\n", " ")
+        text = re.sub(r"sk-[A-Za-z0-9_\-]{8,}", "sk-***", text)
+        return text[:300] or error.__class__.__name__
+
+    def _addPreset(self, body: str) -> str:
+        """处理 /预设 添加 的正文，格式正确就保存，格式错误就给例子。"""
+
+        if ":" not in body:
+            return "格式错误：/预设 添加 名称:内容，例如 /预设 添加 水彩:柔和水彩风格。"
+
+        name, content = body.split(":", 1)
+        if not name.strip() or not content.strip():
+            return "预设名称和内容都不能为空。"
+
+        self.data.addPreset(name.strip(), content.strip())
+        return f"预设已保存：{name.strip()}"
+
+    def _helpText(self) -> str:
+        """返回极简帮助；所有命令词都从 WebUI 配置读取，所以帮助文本会跟随管理员配置变化。"""
+
+        draw = self.data.formatCommand(self.data.drawCommands[0])
+        cancel = self.data.formatCommand(self.data.cancelCommands[0])
+        points = self.data.formatCommand(self.data.pointsCommands[0])
+        rank = self.data.formatCommand(self.data.rankCommands[0])
+        preset = self.data.formatCommand(self.data.presetCommands[0])
+        model = self.data.formatCommand(self.data.modelCommands[0])
+        toggle = self.data.formatCommand(self.data.toggleCommands[0])
+        optimize = self.data.formatCommand(self.data.optimizeCommands[0])
+        return "\n".join(
+            [
+                "生图用法：",
+                f"{draw} 一只猫坐在窗边看雨，画成手机壁纸",
+                f"{draw} 参考这张图，做成水彩头像",
+                f"{draw} 画一张16:9电影海报，高清，两张候选图",
+                f"{optimize} 猫咪头像 先优化提示词",
+                f"{cancel} 取消你最近的任务",
+                f"{points} 看余额，{rank} 看排行",
+                f"{preset} 看预设，{model} 2 换模型，{toggle} 开关生图",
+            ]
+        )
