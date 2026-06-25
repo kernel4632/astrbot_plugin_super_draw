@@ -1,40 +1,44 @@
 {
   "enabled": {
-    "description": "启用插件",
-    "hint": "关闭后不会再受理生图任务，但仍可用 /生图开关 重新开启",
+    "description": "启用生图",
+    "hint": "总开关，关闭后所有生图命令和 LLM 工具都不可用",
     "type": "bool",
     "default": true
   },
   "enable_llm_tool": {
     "description": "启用 LLM 工具",
-    "hint": "启用后，AstrBot 的 LLM 可以自动调用 super_draw 来画图、修图、做表情包",
+    "hint": "允许 Bot 自动调用 super_draw 工具生图；关闭后只能用 /生图 命令",
     "type": "bool",
     "default": true
   },
+  "ban_list": {
+    "description": "生图黑名单",
+    "hint": "填写用户 ID，黑名单中的用户无法使用生图功能；Bot 工具可通过 super_draw_ban 管理",
+    "type": "list",
+    "default": []
+  },
   "debug_mode": {
     "description": "调试模式",
-    "hint": "开启后会输出更多参考图下载和任务日志，排查问题时使用",
+    "hint": "开启后会在日志中输出更多调试信息",
     "type": "bool",
     "default": false
   },
   "api_providers": {
-    "type": "template_list",
     "description": "API 供应商配置",
-    "hint": "可同时配置 OpenAI 兼容接口和 Gemini 官方接口；每个供应商可以填多个 Key 和多个模型",
+    "hint": "支持 OpenAI 兼容接口和 Gemini 官方接口，可添加多个供应商",
+    "type": "list",
     "templates": {
       "openai": {
-        "name": "OpenAI 兼容接口",
-        "hint": "适用于 OpenAI 官方或兼容 /v1/images 的中转服务，base_url 不需要写 /v1",
+        "description": "OpenAI 兼容接口",
         "items": {
           "name": {
             "description": "供应商名称",
-            "hint": "用于展示和切换模型，例如 OpenAI、硅基流动、内部中转",
+            "hint": "用来区分不同供应商，例如 GPT-Image、硅基流动",
             "type": "string",
             "default": "OpenAI"
           },
           "api_type": {
             "description": "接口类型",
-            "hint": "OpenAI 兼容接口保持 openai；Gemini 官方接口使用 gemini",
             "type": "string",
             "default": "openai",
             "options": [
@@ -43,429 +47,244 @@
             ]
           },
           "base_url": {
-            "description": "API Base URL",
-            "hint": "例如 https://api.openai.com；插件会自动补 /v1",
+            "description": "请求地址",
+            "hint": "OpenAI 兼容接口的 Base URL，不需要带 /v1",
             "type": "string",
             "default": "https://api.openai.com"
           },
           "api_keys": {
             "description": "API Keys",
-            "hint": "可填写多个 Key；generation.key_mode 控制轮换方式",
+            "hint": "多个 Key 会自动轮换使用",
             "type": "list",
             "default": []
           },
           "available_models": {
             "description": "可用模型列表",
-            "hint": "每个模型都会出现在 /生图模型 列表里",
+            "hint": "填写该供应商支持的生图模型名称",
             "type": "list",
-            "default": [
-              "gpt-image-2"
-            ]
-          },
-          "timeout": {
-            "description": "超时时间（秒）",
-            "hint": "生图通常较慢，建议 120 到 300 秒",
-            "type": "int",
-            "slider": {
-              "min": 30,
-              "max": 900,
-              "step": 10
-            },
-            "default": 180
+            "default": []
           }
         }
       },
       "gemini": {
-        "name": "Gemini 官方接口",
-        "hint": "适用于 Google Gemini 图片模型；base_url 一般留空",
+        "description": "Gemini 官方接口",
         "items": {
           "name": {
             "description": "供应商名称",
-            "hint": "用于展示和切换模型，例如 Gemini",
+            "hint": "用来区分不同供应商",
             "type": "string",
             "default": "Gemini"
           },
           "api_type": {
             "description": "接口类型",
-            "hint": "Gemini 官方接口保持 gemini",
             "type": "string",
             "default": "gemini",
             "options": [
+              "openai",
               "gemini"
             ]
           },
           "base_url": {
-            "description": "API Base URL",
-            "hint": "一般留空；只有自定义 Gemini 网关才需要填写",
+            "description": "请求地址",
+            "hint": "留空使用官方地址；如果用代理填代理地址",
             "type": "string",
             "default": ""
           },
           "api_keys": {
-            "description": "Gemini API Keys",
-            "hint": "可填写多个 Key；generation.key_mode 控制轮换方式",
+            "description": "API Keys",
+            "hint": "多个 Key 会自动轮换使用",
             "type": "list",
             "default": []
           },
           "available_models": {
             "description": "可用模型列表",
-            "hint": "填写你的 Gemini 生图模型名称",
+            "hint": "填写 Gemini 生图模型名称",
             "type": "list",
             "default": [
-              "gemini-3.1-flash-image",
-              "gemini-3-pro-image"
+              "gemini-2.0-flash-exp-image-generation"
             ]
-          },
-          "timeout": {
-            "description": "超时时间（秒）",
-            "hint": "保留字段，OpenAI 兼容接口会直接使用；Gemini SDK 由自身控制超时",
-            "type": "int",
-            "slider": {
-              "min": 30,
-              "max": 900,
-              "step": 10
-            },
-            "default": 180
           }
         }
       }
     }
   },
   "generation": {
-    "description": "生图行为",
-    "hint": "用户用自然语言描述需求，这里只控制队列、重试、参考图数量和全局提示词",
+    "description": "生图配置",
+    "hint": "控制生图行为的核心参数",
     "type": "object",
     "items": {
       "model": {
         "description": "当前生图模型",
-        "hint": "格式为 供应商/模型；留空自动使用第一个可用模型，也可用 /生图模型 切换",
+        "hint": "格式为 供应商名/模型名，留空自动选第一个可用模型",
         "type": "string",
         "default": ""
       },
       "max_retry_attempts": {
         "description": "最大重试次数",
-        "hint": "同一个模型失败后最多重试几次；每次会重新取 Key",
+        "hint": "单次生图请求失败后的最大重试次数",
         "type": "int",
+        "default": 3,
         "slider": {
           "min": 1,
           "max": 10,
           "step": 1
-        },
-        "default": 3
+        }
       },
-      "key_mode": {
-        "description": "多 Key 使用方式",
-        "hint": "round_robin 依次轮换，random 随机选择",
-        "type": "string",
-        "default": "round_robin",
-        "options": [
-          "round_robin",
-          "random"
-        ]
-      },
-      "max_concurrent_tasks": {
-        "description": "最大并发任务数",
-        "hint": "同时真正调用接口的任务数；越大越快，也越容易触发限流",
+      "timeout": {
+        "description": "生图超时时间（秒）",
+        "hint": "单次 API 请求的超时时间",
         "type": "int",
+        "default": 180,
         "slider": {
-          "min": 1,
-          "max": 20,
-          "step": 1
-        },
-        "default": 3
+          "min": 30,
+          "max": 600,
+          "step": 10
+        }
       },
       "max_queue_size": {
         "description": "最大队列长度",
-        "hint": "超过后拒绝新任务，避免群友刷屏导致任务无限堆积",
+        "hint": "同时允许排队的生图任务数量，超过后拒绝新任务",
         "type": "int",
+        "default": 20,
         "slider": {
           "min": 1,
-          "max": 200,
+          "max": 100,
           "step": 1
-        },
-        "default": 20
-      },
-      "max_reference_images": {
-        "description": "单次最多参考图数量",
-        "hint": "从消息、回复、转发、URL、@头像中最多收集几张参考图",
-        "type": "int",
-        "slider": {
-          "min": 0,
-          "max": 16,
-          "step": 1
-        },
-        "default": 8
-      },
-      "prompt_prefix": {
-        "description": "全局提示词前缀",
-        "hint": "会自动加到每个用户提示词前面；可留空，例如：高质量、清晰细节、自然光",
-        "type": "string",
-        "default": ""
-      },
-      "negative_prompt": {
-        "description": "全局反向提示词",
-        "hint": "会以“避免：...”拼到提示词末尾；可留空，例如：低清晰度、畸形手指、水印、文字错误",
-        "type": "string",
-        "default": ""
-      },
-      "max_prompt_length": {
-        "description": "最大提示词长度",
-        "hint": "超过会自动截断，防止接口拒绝或日志过大",
-        "type": "int",
-        "slider": {
-          "min": 100,
-          "max": 8000,
-          "step": 100
-        },
-        "default": 2000
+        }
       }
     }
   },
   "points": {
     "description": "积分制",
-    "hint": "群友正常发言获得积分，生图按张数消耗积分，用来鼓励活跃并控制生图成本",
+    "hint": "通过积分控制生图使用频率，群友发言赚积分，生图消耗积分",
     "type": "object",
     "items": {
       "enable_points": {
         "description": "启用积分制",
-        "hint": "开启后生图需要积分；关闭后不扣积分",
+        "hint": "关闭后生图不消耗积分，所有人都可以无限使用",
         "type": "bool",
         "default": true
       },
       "points_per_message": {
         "description": "每次有效发言获得积分",
-        "hint": "同一用户在冷却时间内多次发言只记一次，避免刷屏刷分",
         "type": "int",
+        "default": 1,
         "slider": {
           "min": 0,
-          "max": 100,
+          "max": 50,
           "step": 1
-        },
-        "default": 1
+        }
       },
       "message_point_cooldown_seconds": {
         "description": "发言加分冷却（秒）",
-        "hint": "同一群友每隔多少秒最多获得一次发言积分，建议 30 到 120 秒",
+        "hint": "同一用户在冷却时间内只算一次有效发言",
         "type": "int",
+        "default": 30,
         "slider": {
           "min": 0,
           "max": 3600,
           "step": 5
-        },
-        "default": 30
+        }
       },
       "draw_cost_per_image": {
         "description": "每次生图消耗积分",
-        "hint": "现在用户用自然语言说数量，插件按一次请求扣分；设置 0 表示不扣积分但仍统计发言",
         "type": "int",
+        "default": 5,
         "slider": {
           "min": 0,
-          "max": 1000,
+          "max": 100,
           "step": 1
-        },
-        "default": 5
+        }
       },
       "bad_request_penalty_points": {
         "description": "400错误扣除积分",
-        "hint": "接口返回 400 时扣多少积分，例如内容安全限制、违规提示词、请求内容不被模型接受；积分最低扣到 0，设置 0 表示 400 也全额退回",
+        "hint": "生图因内容安全等原因返回 400 时额外扣除的积分，余额最低为 0",
         "type": "int",
+        "default": 5,
         "slider": {
           "min": 0,
-          "max": 1000,
+          "max": 100,
           "step": 1
-        },
-        "default": 5
+        }
       },
       "new_user_points": {
         "description": "新用户初始积分",
-        "hint": "第一次见到群友时赠送的积分，避免新人完全不能生图",
+        "hint": "第一次见到用户时赠送的积分",
         "type": "int",
+        "default": 10,
         "slider": {
           "min": 0,
-          "max": 10000,
-          "step": 1
-        },
-        "default": 10
-      }
-    }
-  },
-  "commands": {
-    "description": "命令自定义",
-    "hint": "所有命令都可以在这里改成群里更顺口的词；列表里可以写多个别名，不需要带 / 前缀",
-    "type": "object",
-    "items": {
-      "draw": {
-        "description": "生图命令",
-        "hint": "例如 生图、画图、生成；有图片会自动图生图，没图片会自动文生图",
-        "type": "list",
-        "default": [
-          "生图",
-          "画图",
-          "生成"
-        ]
+          "max": 1000,
+          "step": 5
+        }
       },
-      "help": {
-        "description": "帮助命令",
-        "hint": "查看插件最短使用说明",
-        "type": "list",
-        "default": [
-          "生图帮助",
-          "画图帮助"
-        ]
-      },
-      "queue": {
-        "description": "队列命令",
-        "hint": "查看当前正在运行的生图任务",
-        "type": "list",
-        "default": [
-          "生图队列",
-          "画图队列"
-        ]
-      },
-      "cancel": {
-        "description": "取消命令",
-        "hint": "取消发送者最近一个生图任务，不需要任务 ID",
-        "type": "list",
-        "default": [
-          "取消生图",
-          "取消画图",
-          "生图取消"
-        ]
-      },
-      "model": {
-        "description": "模型命令",
-        "hint": "查看或切换当前生图模型",
-        "type": "list",
-        "default": [
-          "生图模型",
-          "画图模型"
-        ]
-      },
-      "toggle": {
-        "description": "开关命令",
-        "hint": "切换插件总开关",
-        "type": "list",
-        "default": [
-          "生图开关"
-        ]
-      },
-      "points": {
-        "description": "个人积分命令",
-        "hint": "查看自己的积分、发言和生图消耗",
-        "type": "list",
-        "default": [
-          "生图积分",
-          "积分",
-          "分"
-        ]
-      },
-      "rank": {
-        "description": "积分排行命令",
-        "hint": "查看积分余额排行榜",
-        "type": "list",
-        "default": [
-          "积分排行",
-          "积分榜",
-          "榜"
-        ]
-      },
-      "preset": {
-        "description": "预设命令",
-        "hint": "查看、添加、删除提示词预设",
-        "type": "list",
-        "default": [
-          "生图预设",
-          "画图预设",
-          "预设"
-        ]
-      },
-      "optimize": {
-        "description": "提示词优化命令",
-        "hint": "把用户短描述整理成更适合生图模型理解的提示词",
-        "type": "list",
-        "default": [
-          "提示词优化",
-          "优化提示词"
-        ]
-      }
-    }
-  },
-  "data_tools": {
-    "description": "Bot 数据工具",
-    "hint": "允许 AstrBot 的 LLM 查询插件状态、积分、排行榜，并按需要修改积分",
-    "type": "object",
-    "items": {
       "enable_data_tools": {
-        "description": "启用数据工具",
-        "hint": "开启后 LLM 可以调用 super_draw_data 查询/修改插件数据；关闭后只保留生图工具",
+        "description": "Bot 数据工具",
+        "hint": "允许 LLM 通过 super_draw_data 工具查询和修改积分数据",
         "type": "bool",
         "default": true
       }
     }
   },
-  "prompt_optimize": {
-    "description": "提示词优化",
-    "hint": "配置提示词优化命令和 LLM 工具使用的优化模板",
+  "commentary": {
+    "description": "生图后评价",
+    "hint": "仅在 LLM 工具调用 super_draw 生图成功后触发，用户命令生图不触发",
     "type": "object",
     "items": {
-      "enable_prompt_optimize": {
-        "description": "启用提示词优化",
-        "hint": "关闭后 /提示词优化 和 super_draw_optimize_prompt 会提示功能关闭",
-        "type": "bool",
-        "default": true
-      },
-      "optimize_provider_id": {
-        "description": "提示词优化模型 ID",
-        "hint": "填写 AstrBot 已配置的聊天模型 provider_id，用这个模型改写提示词；留空表示使用当前会话正在使用的模型",
-        "type": "string",
-        "default": ""
-      },
-      "optimize_template": {
-        "description": "提示词优化模板",
-        "hint": "必须包含 {prompt}，插件会把用户原始描述替换进去；插件会把完整模板交给上面选择的 AstrBot 模型生成最终提示词",
-        "type": "text",
-        "default": "请把下面这句话优化成适合图像生成模型的中文提示词，保留用户原意，补充主体、构图、风格、光影、细节和用途，不要加入违规内容，只输出优化后的提示词：{prompt}"
-      },
-      "enable_tool_commentary": {
+      "enable_commentary": {
         "description": "启用工具生图后评价",
-        "hint": "只在 LLM 调用 super_draw 工具生图完成后触发；用户直接发送 /生图 不触发",
+        "hint": "Bot 通过工具生图成功后，会结合上下文自然评价图片",
         "type": "bool",
         "default": true
       },
-      "tool_commentary_provider_id": {
-        "description": "生图后评价模型 ID",
-        "hint": "填写 AstrBot 已配置的聊天模型 provider_id，用这个模型结合上下文评价图片；留空表示使用当前会话正在使用的模型",
+      "commentary_provider_id": {
+        "description": "生图后评价模型",
+        "hint": "填写 AstrBot 已配置的聊天模型 provider_id；留空使用当前会话模型",
         "type": "string",
         "default": ""
       },
-      "tool_commentary_template": {
+      "commentary_template": {
         "description": "生图后评价模板",
-        "hint": "可用变量：{prompt} 用户需求、{model} 生图模型、{context} 当前会话历史、{images} 已发送图片信息、{max_length} 最大字数",
+        "hint": "可用变量：{prompt} 用户需求、{model} 生图模型、{context} 会话历史、{images} 图片信息、{max_length} 最大字数",
         "type": "text",
-        "default": "你是群聊里的 Bot，刚刚亲自完成了一次生图。请结合群聊上下文、用户原始需求和生成图片信息，自然接一句短回复，不要像评审报告，不要复述任务编号，不要说自己无法看图。\n用户生图需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n生成图片信息：\n{images}\n回复要求：最多 {max_length} 字，像群友聊天一样自然，可以点评亮点、提醒如果想改哪里可以继续说。"
+        "default": "你是群聊里的 Bot，刚刚完成了一次生图。结合群聊上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n图片信息：\n{images}\n要求：最多 {max_length} 字，像群友聊天一样自然。"
       },
-      "tool_commentary_max_length": {
+      "commentary_max_length": {
         "description": "生图后评价最大字数",
-        "hint": "控制 Bot 图片后追评的长度，建议 80 到 220 字，避免群聊刷屏",
+        "hint": "控制 Bot 追评长度，避免刷屏",
         "type": "int",
-        "default": 180,
+        "default": 150,
         "slider": {
           "min": 20,
-          "max": 800,
+          "max": 500,
           "step": 10
         }
       }
     }
   },
   "presets": {
-    "description": "预设提示词",
-    "hint": "格式：预设名称:提示词内容。用户输入 /生图 预设名称 描述 或 /生图 1号 描述 时会自动套用",
+    "description": "预设配置",
+    "hint": "预设提示词，用户可通过 /生图预设 管理，也可在此处预配置",
     "type": "list",
-    "default": [
-      "手办化:把参考主体变成精致 1/7 比例收藏级手办，保持角色特征，透明亚克力底座，柔和棚拍光，细节清晰，商品摄影质感",
-      "头像:生成适合社交平台使用的头像，主体清晰，背景简洁，构图居中，风格精致，表情自然",
-      "表情包:做成聊天表情包，主体夸张有趣，表情明确，画面简洁，适合群聊传播，保留原图人物特征",
-      "海报:生成一张高完成度视觉海报，明确标题区域，电影级构图，强视觉中心，光影高级，适合 16:9 或 3:2",
-      "水彩:柔和透明水彩风格，纸张纹理，色彩温暖，边缘自然晕染，画面干净"
-    ]
+    "templates": {
+      "preset": {
+        "description": "预设项",
+        "items": {
+          "name": {
+            "description": "预设名称",
+            "hint": "用户输入 /生图 预设名称 描述 时会自动套用",
+            "type": "string",
+            "default": ""
+          },
+          "prompt": {
+            "description": "提示词内容",
+            "hint": "预设的完整提示词，会追加在用户描述前面",
+            "type": "text",
+            "default": ""
+          }
+        }
+      }
+    },
+    "default": []
   }
 }
