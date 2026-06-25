@@ -321,7 +321,7 @@ class Data:
         )
 
     def changePoints(self, userKey: str, delta: int, reason: str = "") -> str:
-        """Bot 工具修改积分。"""
+        """Bot 工具增减积分。delta 正数加分，负数扣分。"""
 
         user = self._pointUser(userKey)
         before = int(user.get("points", 0))
@@ -334,6 +334,21 @@ class Data:
         self._savePoints()
         note = f"（{reason}）" if reason else ""
         return f"积分：{before} → {after}{note}"
+
+    def setPoints(self, userKey: str, value: int, reason: str = "") -> str:
+        """Bot 工具直接设置积分到指定值。"""
+
+        user = self._pointUser(userKey)
+        before = int(user.get("points", 0))
+        after = max(0, int(value))
+        user["points"] = after
+        if after > before:
+            user["earned"] = int(user.get("earned", 0)) + (after - before)
+        elif after < before:
+            user["spent"] = int(user.get("spent", 0)) + (before - after)
+        self._savePoints()
+        note = f"（{reason}）" if reason else ""
+        return f"积分已设置：{before} → {after}{note}"
 
     def formatSummary(self) -> str:
         """给 Bot 工具的插件概要。"""

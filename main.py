@@ -170,9 +170,9 @@ class SuperDraw(Star):
         查询或修改生图插件数据和积分。
 
         Args:
-            action(string): 操作名：summary、my_points、user_points、change_points、rank
+            action(string): 操作名：summary、my_points、user_points、change_points、set_points、rank
             user_key(string): 目标用户键，空则为当前用户
-            delta(number): change_points 时增减的积分
+            delta(number): change_points 时为增减值（正数加分负数扣分），set_points 时为目标积分值
             reason(string): 修改原因
         """
 
@@ -191,9 +191,11 @@ class SuperDraw(Star):
             return self.data.formatPoints(targetKey)
         if act == "change_points":
             return self.data.changePoints(targetKey, int(delta), reason)
+        if act == "set_points":
+            return self.data.setPoints(targetKey, int(delta), reason)
         if act == "rank":
             return self._formatRank()
-        return "可用 action：summary、my_points、user_points、change_points、rank"
+        return "可用 action：summary、my_points、user_points、change_points、set_points、rank"
 
     @filter.llm_tool(name="super_draw_ban")
     async def toolBan(self, event: AstrMessageEvent, action: str, user_id: str = "") -> str:
