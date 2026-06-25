@@ -109,8 +109,8 @@ class SuperDraw(Star):
     async def cmdGenerateAlias(self, event: AstrMessageEvent):
         """默认额外支持 /生成；更多自定义词走 WebUI commands.draw 配置和群消息路由。"""
 
-        async for result in self.cmdDraw(event):
-            yield result
+        yield event.plain_result(await self._acceptDraw(event))
+        self._stopEvent(event)
 
     @filter.command("生图队列")
     @filter.command("画图队列")
@@ -212,7 +212,7 @@ class SuperDraw(Star):
         if fullReason := self._queueFullReason():
             return fullReason
 
-        request["event"] = event  # 工具生图才保存事件，后续评价需要读取当前会话上下文
+        request["event"] = self._eventFromToolContext(event)  # 工具生图要保存真实消息事件，AstrBot v4.26 可能传入 ContextWrapper
         request["fromTool"] = True  # 只有 LLM 工具生图完成后才触发 Bot 自然评价，普通命令不触发
         request["pointsCost"] = self.data.spendDrawPoints(request["pointKey"], request["count"], request["isPrivate"])
         taskId = self._newTaskId(request["userId"], request["prompt"])
@@ -353,7 +353,8 @@ class SuperDraw(Star):
     async def _callAstrBotModel(self, event: AstrMessageEvent, providerId: str, prompt: str, actionName: str) -> str:
         """统一调用 AstrBot 已配置的聊天模型；providerId 留空时使用当前会话模型。"""
 
-        chatProviderId = providerId.strip() or await self.context.get_current_chat_provider_id(umo=event.unified_msg_origin)
+        realEvent = self._eventFromToolContext(event)
+        chatProviderId = providerId.strip() or await self.context.get_current_chat_provider_id(umo=realEvent.unified_msg_origin)
         if not chatProviderId:
             raise RuntimeError(f"{actionName}没有可用的 AstrBot 聊天模型，请在会话或 WebUI 配置 provider_id。")
 
@@ -449,16 +450,17 @@ class SuperDraw(Star):
     async def _buildRequestFromTool(self, event: AstrMessageEvent, prompt: str, urls: str) -> dict[str, Any]:
         """从 LLM 工具参数构建生图请求；比例、质量、数量都让 LLM 写进自然语言 prompt。"""
 
+        toolEvent = self._eventFromToolContext(event)
         images: list[bytes] = []
         for url in [item.strip() for item in urls.split(",") if item.strip()]:
             if imageBytes := await self._downloadImage(url):
                 images.append(imageBytes)
-        images.extend(await self._collectImages(event))
+        images.extend(await self._collectImages(toolEvent))
 
         return {
-            "userId": event.unified_msg_origin,
-            "pointKey": self._pointKey(event),
-            "isPrivate": self._isPrivate(event),
+            "userId": toolEvent.unified_msg_origin,
+            "pointKey": self._pointKey(toolEvent),
+            "isPrivate": self._isPrivate(toolEvent),
             "prompt": self.data.buildPrompt(prompt.strip()),
             "preset": None,
             "images": images[: self.data.maxReferenceImages],
@@ -477,11 +479,15 @@ class SuperDraw(Star):
     async def _collectImages(self, event: AstrMessageEvent) -> list[bytes]:
         """从消息图片、回复、合并转发、@头像、文本 URL 中收集参考图。"""
 
-        if not event.message_obj or not event.message_obj.message:
+        if not event or not hasattr(event, "message_obj"):
+            return []
+
+        messageObj = getattr(event, "message_obj", None)
+        if not messageObj or not getattr(messageObj, "message", None):
             return []
 
         images: list[bytes] = []
-        for index, component in enumerate(event.message_obj.message):
+        for index, component in enumerate(messageObj.message):
             if index == 0 and isinstance(component, Comp.At):
                 continue  # 群聊里开头 @机器人 是命令触发，不应把机器人头像当参考图
             images.extend(await self._extractImagesFromComponent(component, event))
@@ -778,6 +784,23 @@ class SuperDraw(Star):
 
         if callable(getattr(event, "stop_event", None)):
             event.stop_event()
+
+    def _eventFromToolContext(self, value: Any) -> AstrMessageEvent:
+        """兼容 AstrBot v4.26 的 LLM 工具上下文；有些版本直接传 ContextWrapper，需要从 context.event 里把真实事件拿出来。"""
+
+        if isinstance(value, AstrMessageEvent):
+            return value
+
+        if hasattr(value, "message_obj") and hasattr(value, "unified_msg_origin"):
+            return value
+
+        context = getattr(value, "context", None)
+        event = getattr(context, "event", None)
+        if isinstance(event, AstrMessageEvent):
+            return event
+
+        innerEvent = getattr(value, "event", None)
+        return innerEvent if isinstance(innerEvent, AstrMessageEvent) else value
 
     # ========== 文本工具 ==========
 
