@@ -25,11 +25,13 @@
   },
   "api_providers": {
     "description": "API 供应商配置",
-    "hint": "支持 OpenAI 兼容接口和 Gemini 官方接口，可添加多个供应商",
-    "type": "list",
+    "hint": "支持 OpenAI 兼容接口和 Gemini 官方接口，可添加多个供应商和模型",
+    "type": "template_list",
     "templates": {
       "openai": {
-        "description": "OpenAI 兼容接口",
+        "name": "OpenAI 兼容接口",
+        "hint": "适用于 OpenAI、硅基流动、DeepSeek 等兼容接口",
+        "display_item": "name",
         "items": {
           "name": {
             "description": "供应商名称",
@@ -67,7 +69,9 @@
         }
       },
       "gemini": {
-        "description": "Gemini 官方接口",
+        "name": "Gemini 官方接口",
+        "hint": "适用于 Google Gemini 官方生图 API",
+        "display_item": "name",
         "items": {
           "name": {
             "description": "供应商名称",
@@ -265,10 +269,11 @@
   "presets": {
     "description": "预设配置",
     "hint": "预设提示词，用户可通过 /生图预设 管理，也可在此处预配置",
-    "type": "list",
+    "type": "template_list",
     "templates": {
       "preset": {
-        "description": "预设项",
+        "name": "预设项",
+        "display_item": "name",
         "items": {
           "name": {
             "description": "预设名称",
@@ -284,7 +289,6 @@
           }
         }
       }
-    },
-    "default": []
+    }
   }
 }
