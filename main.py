@@ -124,15 +124,19 @@ class SuperDraw(Star):
     # ========== LLM 工具 ==========
 
     @filter.llm_tool(name="super_draw")
-    async def toolDraw(self, event: AstrMessageEvent, prompt: str, urls: str = "") -> str:
+    async def toolDraw(self, event: AstrMessageEvent, prompt: str = "", urls: str = "") -> str:
         """
-        当用户想画图、修图、P图、生成头像、生成海报时调用。
+        生成图片工具。当用户想画图、修图、P图、改图、生成头像、生成海报、做表情包、画壁纸、画插画时调用此工具。
+        必须提供 prompt 参数描述想要的图片内容。如果用户提供了参考图片 URL，请通过 urls 传入。
+        调用后会启动异步生图任务并返回任务 ID，图片生成完成后会自动发送到聊天中。
 
         Args:
-            prompt(string): 用户想要的图片内容或修改要求
-            urls(string): 参考图 URL，多个用逗号分隔
+            prompt(string): 必填。用户想要的图片内容描述，用自然语言写清楚画面内容、风格、比例、用途等。例如"一只橘猫坐在窗边看雨，水彩风格，竖版手机壁纸"
+            urls(string): 可选。参考图片的 URL 地址，如果有多张参考图用英文逗号分隔。聊天中的图片会自动收集，不需要手动填写
         """
 
+        if not prompt.strip():
+            return "请提供生图描述，例如：prompt='一只猫坐在窗边看雨'"
         if not self.data.enabled:
             return "生图功能当前关闭。"
         if not self.data.enableTool:
@@ -165,17 +169,26 @@ class SuperDraw(Star):
         return f"生图任务已开始（{taskId}），请稍候。"
 
     @filter.llm_tool(name="super_draw_data")
-    async def toolData(self, event: AstrMessageEvent, action: str, user_key: str = "", delta: int = 0, reason: str = "") -> str:
+    async def toolData(self, event: AstrMessageEvent, action: str = "", user_key: str = "", delta: int = 0, reason: str = "") -> str:
         """
-        查询或修改生图插件数据和积分。
+        查询或修改生图插件的数据和用户积分。可以查看插件状态、查询用户积分、修改积分、查看排行榜。
+        action 参数决定执行哪种操作：
+        - summary：查看插件整体状态（模型、用户数等）
+        - my_points：查看当前对话用户自己的积分
+        - user_points：查看指定用户的积分（需要 user_key）
+        - change_points：给用户加分或扣分（需要 delta，正数加分负数扣分）
+        - set_points：把用户积分直接设置为指定值（需要 delta 为目标值）
+        - rank：查看积分排行榜前10名
 
         Args:
-            action(string): 操作名：summary、my_points、user_points、change_points、set_points、rank
-            user_key(string): 目标用户键，空则为当前用户
-            delta(number): change_points 时为增减值（正数加分负数扣分），set_points 时为目标积分值
-            reason(string): 修改原因
+            action(string): 必填。操作名，可选值：summary、my_points、user_points、change_points、set_points、rank
+            user_key(string): 目标用户的标识键。留空表示当前对话的用户。change_points 和 set_points 时可指定要操作的用户
+            delta(number): change_points 时为增减值（正数加分如+10，负数扣分如-5）；set_points 时为要设置的目标积分值
+            reason(string): 修改积分的原因说明，会记录在返回结果中便于审计
         """
 
+        if not action.strip():
+            return "请提供 action 参数。可用值：summary、my_points、user_points、change_points、set_points、rank"
         if not self.data.enableDataTools:
             return "数据工具当前关闭。"
 
@@ -198,15 +211,20 @@ class SuperDraw(Star):
         return "可用 action：summary、my_points、user_points、change_points、set_points、rank"
 
     @filter.llm_tool(name="super_draw_ban")
-    async def toolBan(self, event: AstrMessageEvent, action: str, user_id: str = "") -> str:
+    async def toolBan(self, event: AstrMessageEvent, action: str = "", user_id: str = "") -> str:
         """
-        管理生图黑名单。
+        管理生图功能的黑名单。黑名单中的用户无法使用生图功能。
+        - list：查看当前黑名单中所有用户
+        - add：把指定用户加入黑名单（需要 user_id）
+        - remove：把指定用户从黑名单移除（需要 user_id）
 
         Args:
-            action(string): 操作名：list、add、remove
-            user_id(string): 要操作的用户 ID
+            action(string): 必填。操作名，可选值：list、add、remove
+            user_id(string): 要加入或移除黑名单的用户 ID。list 操作时不需要填写
         """
 
+        if not action.strip():
+            return "请提供 action 参数。可用值：list、add、remove"
         act = action.strip().lower()
         if act == "list":
             return self.data.formatBanList()
