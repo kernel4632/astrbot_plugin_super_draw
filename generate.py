@@ -146,9 +146,9 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
             # 部分接口返回 b64_json，直接解码即可
             result.append(base64.b64decode(b64_data))
         elif img_url := getattr(item, "url", None):
-            # 返回 URL 时，用 OpenAI SDK 内置的 httpx 同步下载；client._client 是底层 httpx.Client
+            # 返回 URL 时，用 OpenAI SDK 内置的 httpx 异步下载
             try:
-                resp = client._client.get(img_url, timeout=int(provider.get("timeout", 180)))
+                resp = await client._client.get(img_url, timeout=int(provider.get("timeout", 180)))
                 resp.raise_for_status()
                 result.append(resp.content)
             except Exception as download_error:
