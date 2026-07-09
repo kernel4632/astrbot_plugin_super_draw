@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio  # 重试失败后短暂等待，避免立刻再次撞限流
 import base64  # OpenAI 和部分 Gemini 响应会把图片放在 base64 字符串里
+import aiohttp  # 用来下载 URL 格式的图片，兼容不返回 b64_json 的 API
 from typing import Any, Callable  # keyGetter 是外部传入的取 key 函数
 
 from openai import AsyncOpenAI  # OpenAI 官方异步客户端，兼容大多数 OpenAI-like 图像接口
@@ -139,9 +140,23 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
     else:
         response = await client.images.generate(**request)
 
-    result = [base64.b64decode(item.b64_json) for item in (response.data or []) if getattr(item, "b64_json", None)]
+    result: list[bytes] = []
+    timeout_sec = int(provider.get("timeout", 180))
+    for item in response.data or []:
+        # 优先使用 b64_json；部分 OpenAI 兼容 API 不返回 b64_json 而是 url，需要下载
+        if b64_data := getattr(item, "b64_json", None):
+            result.append(base64.b64decode(b64_data))
+        elif img_url := getattr(item, "url", None):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(img_url, timeout=aiohttp.ClientTimeout(total=timeout_sec)) as resp:
+                        if resp.status == 200:
+                            result.append(await resp.read())
+            except Exception as download_error:
+                raise ValueError(f"下载图片 URL 失败：{img_url} — {download_error}")
+
     if not result:
-        raise ValueError("OpenAI 响应里没有图片数据。")
+        raise ValueError("OpenAI 响应里没有图片数据（既无 b64_json 也无 url）。")
     return result
 
 
