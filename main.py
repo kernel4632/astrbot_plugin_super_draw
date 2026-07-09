@@ -436,16 +436,18 @@ class SuperDraw(Star):
         if not targetQQ:
             return "用法：/生图赠分 @用户 数量\n请 @ 一个用户。"
 
-        # 从文本里找数字参数
-        body = self._body(event)
-        amountText = "".join(ch for ch in body if ch.isdigit() or ch == "-")
+        # 从文本里找数字参数：message_str 里 @xxx 会展开成 "@QQ号 "，所以直接取最后一段空格分隔的单词
+        body = (event.message_str or "").strip()
+        # 取最后一个 token，跳过 @xxx 部分
+        tokens = [t for t in body.split() if not t.startswith("@") and t not in ("/生图赠分", "生图赠分")]
+        amountText = tokens[-1] if tokens else ""
         if not amountText:
             return "用法：/生图赠分 @用户 数量\n请在命令后加上要赠送的积分数量，例如：/生图赠分 @用户 50"
 
         try:
-            amount = int(amountText)
+            amount = int(amountText.lstrip("+"))
         except ValueError:
-            return "积分数量格式错误，请填写整数，例如：50"
+            return f"积分数量格式错误（收到：{amountText!r}），请填写整数，例如：50"
 
         if amount == 0:
             return "积分数量不能为 0。"
