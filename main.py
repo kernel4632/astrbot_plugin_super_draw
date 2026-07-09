@@ -452,8 +452,9 @@ class SuperDraw(Star):
 
         # 构建目标用户的积分 key（用户单独记录，不依赖群号）
         targetKey = targetQQ
-        result = self.data.changePoints(targetKey, amount, f"管理员赠分")
-        return f"已给用户 {targetQQ}：{result}"
+        result = self.data.changePoints(targetKey, amount, "管理员赠分")
+        action = "赠送" if amount > 0 else "扣除"
+        return f"已向 @{targetQQ} {action} {abs(amount)} 分，{result}"
 
     def _handlePreset(self, body: str) -> str:
         """处理预设命令。"""
@@ -564,10 +565,10 @@ class SuperDraw(Star):
         return text.split(maxsplit=1)[1].strip() if " " in text else ""
 
     def _pointKey(self, event: AstrMessageEvent) -> str:
-        """积分用户键。"""
+        """积分用户键：只用 QQ 号，不区分群，同一个人在所有群共享积分。"""
 
         sid = self._senderId(event)
-        return f"{event.unified_msg_origin}:{sid}" if sid else event.unified_msg_origin
+        return sid if sid else event.unified_msg_origin
 
     def _senderId(self, event: AstrMessageEvent) -> str:
         """读发送者 ID。"""
