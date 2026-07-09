@@ -121,6 +121,14 @@ class SuperDraw(Star):
         yield event.plain_result(f"生图功能已{'开启' if newState else '关闭'}。")
         event.stop_event()
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
+    @filter.command("生图赠分")
+    async def cmdGivePoints(self, event: AstrMessageEvent):
+        """管理员给指定用户增加生图积分。用法：/生图赠分 @用户 数量"""
+
+        yield event.plain_result(self._handleGivePoints(event))
+        event.stop_event()
+
     # ========== LLM 工具 ==========
 
     @filter.llm_tool(name="super_draw")
@@ -404,6 +412,48 @@ class SuperDraw(Star):
                 self.taskInfo.pop(taskId, None)
                 return "已取消你最近的生图任务，积分会自动退回。"
         return "你当前没有正在运行的任务。"
+
+    def _handleGivePoints(self, event: AstrMessageEvent) -> str:
+        """
+        管理员给指定用户增加积分。
+        用法：/生图赠分 @用户 数量
+        通过 @ 组件识别目标用户，通过文本末尾数字识别增量。
+        """
+
+        msgObj = getattr(event, "message_obj", None)
+        message = getattr(msgObj, "message", []) if msgObj else []
+
+        # 从消息链里找第一个 @（排除机器人自身）
+        targetQQ = ""
+        for comp in message:
+            if isinstance(comp, Comp.At):
+                qq = str(getattr(comp, "qq", "") or "")
+                selfId = str(getattr(msgObj, "self_id", "") or "") if msgObj else ""
+                if qq and qq != selfId and qq != "all":
+                    targetQQ = qq
+                    break
+
+        if not targetQQ:
+            return "用法：/生图赠分 @用户 数量\n请 @ 一个用户。"
+
+        # 从文本里找数字参数
+        body = self._body(event)
+        amountText = "".join(ch for ch in body if ch.isdigit() or ch == "-")
+        if not amountText:
+            return "用法：/生图赠分 @用户 数量\n请在命令后加上要赠送的积分数量，例如：/生图赠分 @用户 50"
+
+        try:
+            amount = int(amountText)
+        except ValueError:
+            return "积分数量格式错误，请填写整数，例如：50"
+
+        if amount == 0:
+            return "积分数量不能为 0。"
+
+        # 构建目标用户的积分 key（用户单独记录，不依赖群号）
+        targetKey = targetQQ
+        result = self.data.changePoints(targetKey, amount, f"管理员赠分")
+        return f"已给用户 {targetQQ}：{result}"
 
     def _handlePreset(self, body: str) -> str:
         """处理预设命令。"""
