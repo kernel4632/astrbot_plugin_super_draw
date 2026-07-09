@@ -213,44 +213,79 @@ async def _callGemini(provider: dict[str, Any], apiKey: str, prompt: str, images
         config.image_config = genaiTypes.ImageConfig(aspect_ratio=ratio)
 
     result: list[bytes] = []
+    timeoutSec = int(provider.get("timeout", 180))
     for _ in range(max(1, min(8, int(n)))):
         response = await client.aio.models.generate_content(model=provider["model"], contents=parts, config=config)
-        result.extend(_readGeminiImages(response))
+        imageBytes, imageUrls = _readGeminiImages(response)
+        result.extend(imageBytes)
+        for url in imageUrls:  # 某些代理把图片以 URL 形式返回，需要下载
+            result.append(await _downloadUrl(url, timeoutSec))
 
     if not result:
         raise ValueError("Gemini 响应里没有图片数据。")
     return result
 
 
-def _readGeminiImages(response: Any) -> list[bytes]:
-    """从 Gemini 响应中抽取图片 bytes；不同 SDK 版本字段略有差异，所以这里集中兼容。"""
+async def _downloadUrl(url: str, timeoutSec: int) -> bytes:
+    """下载图片 URL；httpx 是 openai SDK 的依赖，环境里必定存在。"""
 
-    result: list[bytes] = []
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=timeoutSec) as http:
+            resp = await http.get(url)
+            resp.raise_for_status()
+            return resp.content
+    except Exception as error:
+        raise ValueError(f"下载图片 URL 失败：{url} — {error}")
+
+
+def _readGeminiImages(response: Any) -> tuple[list[bytes], list[str]]:
+    """从 Gemini 响应中抽取图片；返回 (bytes 列表, 待下载 URL 列表)。"""
+
+    imageBytes: list[bytes] = []
+    imageUrls: list[str] = []
     candidates = getattr(response, "candidates", None) or []
-    directParts = getattr(response, "parts", None) or []
 
-    for part in directParts:
-        result.extend(_readGeminiPart(part))
-
+    # response.parts 只是 candidates[0].content.parts 的快捷方式，两边都遍历会重复取图；
+    # 所以优先遍历 candidates，只有拿不到 candidates 时才退回 response.parts。
+    allParts: list[Any] = []
     for candidate in candidates:
         content = getattr(candidate, "content", None)
-        for part in getattr(content, "parts", []) or []:
-            result.extend(_readGeminiPart(part))
+        allParts.extend(getattr(content, "parts", []) or [])
+    if not allParts:
+        allParts = list(getattr(response, "parts", None) or [])
 
-    return result
+    for part in allParts:
+        data, url = _readGeminiPart(part)
+        if data:
+            imageBytes.append(data)
+        if url:
+            imageUrls.append(url)
+
+    return imageBytes, imageUrls
 
 
-def _readGeminiPart(part: Any) -> list[bytes]:
-    """读取 Gemini 单个 part 里的 inline_data，bytes 直接用，字符串就按 base64 解码。"""
+def _readGeminiPart(part: Any) -> tuple[bytes | None, str | None]:
+    """
+    读取 Gemini 单个 part 里的图片，返回 (图片bytes, 图片URL)，两者最多一个非空。
+
+    标准 Gemini API 把图片放在 inline_data.data（bytes 或 base64 字符串）。
+    某些代理（如 new-api 类中转）会把图片 URL 放在 text 字段里，需要单独识别再下载。
+    """
 
     inline = getattr(part, "inline_data", None)
     data = getattr(inline, "data", None) if inline else None
+    if isinstance(data, bytes) and data:
+        return data, None
+    if isinstance(data, str) and data:
+        return base64.b64decode(data), None
 
-    if isinstance(data, bytes):
-        return [data]
-    if isinstance(data, str):
-        return [base64.b64decode(data)]
-    return []
+    text = getattr(part, "text", None)
+    if isinstance(text, str) and text.strip().startswith(("http://", "https://")):
+        return None, text.strip()
+
+    return None, None
 
 
 def _geminiClient(apiKey: str, baseUrl: str = "") -> Any:
