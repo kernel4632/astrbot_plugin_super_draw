@@ -79,7 +79,6 @@ class SuperDraw(Star):
             if meta.get("uid") == uid and not self.tasks[tid].done():
                 self.tasks[tid].cancel()  # 取消任务
                 self.taskMeta.pop(tid, None)
-                yield event.plain_result("已取消最近的生图任务，积分会自动退回。")
                 event.stop_event()
                 return
         yield event.plain_result("你当前没有正在运行的任务。")
