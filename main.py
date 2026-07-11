@@ -71,7 +71,7 @@ class SuperDraw(Star):
         yield event.plain_result(result)
         event.stop_event()  # 阻止 LLM 接管
 
-    @filter.command("取消生图")
+    @filter.command("生图取消")
     async def cmd_cancel(self, event: AstrMessageEvent):
         uid = self._uid(event)  # 取发送者 QQ 号
         for tid in reversed(list(self.tasks)):  # 从最新任务往前找
@@ -269,7 +269,8 @@ class SuperDraw(Star):
         except asyncio.CancelledError:  # 用户取消
             self.data.refund(req["uid"], req["cost"])
             await self.context.send_message(
-                req["umo"], MessageChain().message(f"生图任务 {tid} 已取消，积分退给你了")
+                req["umo"],
+                MessageChain().message(f"生图任务 {tid} 已取消，积分退给你了"),
             )
         except Exception as e:  # 生图失败
             logger.error(f"[SuperDraw] {tid} 失败: {e}")
