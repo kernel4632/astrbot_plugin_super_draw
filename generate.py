@@ -146,13 +146,18 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
             # 部分接口返回 b64_json，直接解码即可
             result.append(base64.b64decode(b64_data))
         elif img_url := getattr(item, "url", None):
-            # 返回 URL 时，用 OpenAI SDK 内置的 httpx 异步下载
-            try:
-                resp = await client._client.get(img_url, timeout=int(provider.get("timeout", 180)))
-                resp.raise_for_status()
-                result.append(resp.content)
-            except Exception as download_error:
-                raise ValueError(f"下载图片 URL 失败：{img_url} — {download_error}")
+            cleanUrl = str(img_url).strip()
+            # data URI（data:image/png;base64,xxx）：直接解码，不需要下载
+            if cleanUrl.startswith("data:image") and "," in cleanUrl:
+                result.append(base64.b64decode(cleanUrl.split(",", 1)[1]))
+            else:
+                # 真正的 http/https URL，用 SDK 内置 httpx 异步下载
+                try:
+                    resp = await client._client.get(cleanUrl, timeout=int(provider.get("timeout", 180)))
+                    resp.raise_for_status()
+                    result.append(resp.content)
+                except Exception as download_error:
+                    raise ValueError(f"下载图片 URL 失败：{cleanUrl[:80]} — {download_error}")
 
     if not result:
         raise ValueError("OpenAI 响应里没有图片数据（既无 b64_json 也无 url）。")
@@ -282,8 +287,20 @@ def _readGeminiPart(part: Any) -> tuple[bytes | None, str | None]:
         return base64.b64decode(data), None
 
     text = getattr(part, "text", None)
-    if isinstance(text, str) and text.strip().startswith(("http://", "https://")):
-        return None, text.strip()
+    if isinstance(text, str):
+        cleanText = text.strip()
+        # data URI 格式（data:image/png;base64,xxx）：直接解出 base64 部分，不需要下载
+        if cleanText.startswith("data:image"):
+            if "," in cleanText:
+                b64Part = cleanText.split(",", 1)[1]
+                try:
+                    return base64.b64decode(b64Part), None
+                except Exception:
+                    return None, None
+            return None, None
+        # http/https URL：交给外层下载
+        if cleanText.startswith(("http://", "https://")):
+            return None, cleanText
 
     return None, None
 

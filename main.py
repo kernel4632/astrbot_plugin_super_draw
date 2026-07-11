@@ -600,8 +600,16 @@ class SuperDraw(Star):
         return self._activeCount() >= self.data.maxQueueSize
 
     def _is400(self, error: Exception) -> bool:
+        # 只匹配真正的内容安全/400 错误关键词，避免误伤（例如 base64 数据里恰好含 "400"）
         text = str(error).lower()
-        return "400" in text or "bad request" in text or "content_policy" in text
+        return (
+            "content_policy" in text
+            or "content policy" in text
+            or "invalid_request_error" in text
+            or "error code: 400" in text
+            or "status code: 400" in text
+            or "bad request" in text
+        )
 
     def _safeError(self, error: Exception) -> str:
         text = str(error)[:200]
