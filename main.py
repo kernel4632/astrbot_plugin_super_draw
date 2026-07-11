@@ -224,8 +224,8 @@ class SuperDraw(Star):
             return f"队列已满（{active}/{self.data.maxQueue}），请稍后"
         cost = self.data.spend(uid)  # 预扣积分
         tid = hashlib.md5(f"{time.time()}|{uid}|{prompt[:80]}".encode()).hexdigest()[
-            :8
-        ]  # 8 位任务 ID
+            :4
+        ]  # 4 位任务 ID
         req = {
             "uid": uid,
             "umo": event.unified_msg_origin,
