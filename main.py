@@ -73,12 +73,27 @@ class SuperDraw(Star):
 
     @filter.command("生图取消")
     async def cmd_cancel(self, event: AstrMessageEvent):
-        uid = self._uid(event)  # 取发送者 QQ 号
-        for tid in reversed(list(self.tasks)):  # 从最新任务往前找
+        body = self._body(event).strip()  # 取命令参数（可能是任务编码）
+        uid = self._uid(event)  # 当前发送者 QQ 号
+        isAdmin = getattr(event, "role", "") == "admin"  # AstrBot 在 process 阶段设置 event.role = "admin"
+
+        if body and isAdmin:  # 管理员带任务编码 → 取消指定任务
+            task = self.tasks.get(body)
+            if task and not task.done():
+                task.cancel()
+                self.taskMeta.pop(body, None)
+                yield event.plain_result(f"已取消任务 {body}")
+            else:
+                yield event.plain_result(f"任务 {body} 不存在或已完成")
+            event.stop_event()
+            return
+
+        for tid in reversed(list(self.tasks)):  # 普通用户 → 取消自己最近的任务
             meta = self.taskMeta.get(tid, {})
             if meta.get("uid") == uid and not self.tasks[tid].done():
-                self.tasks[tid].cancel()  # 取消任务
+                self.tasks[tid].cancel()
                 self.taskMeta.pop(tid, None)
+                yield event.plain_result("已取消你最近的生图任务，积分会自动退回")
                 event.stop_event()
                 return
         yield event.plain_result("你当前没有正在运行的任务。")
@@ -99,6 +114,7 @@ class SuperDraw(Star):
         yield event.plain_result(self.data.model(self._body(event)))
         event.stop_event()
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("生图开关")
     async def cmd_toggle(self, event: AstrMessageEvent):
         self.data.toggle()
@@ -107,7 +123,7 @@ class SuperDraw(Star):
                 if not t.done():
                     t.cancel()
         yield event.plain_result(
-            f"生图功能已{'开启' if self.data.enabled else '关闭'}。"
+            f"生图功能已{'开启' if self.data.enabled else '关闭'}"
         )
         event.stop_event()
 
