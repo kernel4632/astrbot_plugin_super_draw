@@ -105,7 +105,7 @@
             "hint": "填写 Gemini 生图模型名称",
             "type": "list",
             "default": [
-              "gemini-2.0-flash-exp-image-generation"
+              "gemini-3.1-flash-image-preview"
             ]
           }
         }
@@ -127,7 +127,7 @@
         "description": "最大重试次数",
         "hint": "单次生图请求失败后的最大重试次数",
         "type": "int",
-        "default": 3,
+        "default": 1,
         "slider": {
           "min": 1,
           "max": 10,
@@ -138,7 +138,7 @@
         "description": "生图超时时间（秒）",
         "hint": "单次 API 请求的超时时间",
         "type": "int",
-        "default": 180,
+        "default": 600,
         "slider": {
           "min": 30,
           "max": 600,
@@ -149,7 +149,7 @@
         "description": "最大队列长度",
         "hint": "同时允许排队的生图任务数量，超过后拒绝新任务",
         "type": "int",
-        "default": 20,
+        "default": 10,
         "slider": {
           "min": 1,
           "max": 100,
@@ -183,7 +183,7 @@
         "description": "发言加分冷却（秒）",
         "hint": "同一用户在冷却时间内只算一次有效发言",
         "type": "int",
-        "default": 30,
+        "default": 60,
         "slider": {
           "min": 0,
           "max": 3600,
@@ -193,7 +193,7 @@
       "draw_cost_per_image": {
         "description": "每次生图消耗积分",
         "type": "int",
-        "default": 5,
+        "default": 10,
         "slider": {
           "min": 0,
           "max": 100,
@@ -204,7 +204,7 @@
         "description": "400错误扣除积分",
         "hint": "生图因内容安全等原因返回 400 时额外扣除的积分，余额最低为 0",
         "type": "int",
-        "default": 5,
+        "default": 50,
         "slider": {
           "min": 0,
           "max": 100,
