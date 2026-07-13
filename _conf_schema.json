@@ -251,7 +251,7 @@
         "description": "生图后评价模板",
         "hint": "可用变量：{prompt} 用户需求、{model} 生图模型、{context} 会话历史、{images} 图片信息、{max_length} 最大字数",
         "type": "text",
-        "default": "你是群聊里的 Bot，刚刚完成了一次生图。结合群聊上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n图片信息：\n{images}\n要求：最多 {max_length} 字，像群友聊天一样自然。"
+        "default": "你是群聊里的 Bot，刚刚完成了一次生图。结合群聊上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n图片信息：\n{images}\n要求：最多 {max_length} 字，接续之前发起请求的人的那种回复，尽可能的模仿群友说话风格，根据上下文。"
       },
       "commentary_max_length": {
         "description": "生图后评价最大字数",

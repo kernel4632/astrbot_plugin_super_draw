@@ -383,7 +383,7 @@ class Data:
         """构建生图后评价的 LLM 输入。"""
         t = (
             self.commentTemplate
-            or "你是群聊里的 Bot，刚刚完成了一次生图。结合上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n模型：{model}\n上下文：\n{context}\n图片：\n{images}\n要求：最多 {max_length} 字，像群友聊天一样自然。"
+            or "你是群聊里的 Bot，刚刚完成了一次生图。结合群聊上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n图片信息：\n{images}\n要求：最多 {max_length} 字，接续之前发起请求的人的那种回复，尽可能的模仿群友说话风格，根据上下文。"
         )
         return (
             t.replace("{prompt}", prompt)
