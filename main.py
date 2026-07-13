@@ -75,7 +75,9 @@ class SuperDraw(Star):
     async def cmd_cancel(self, event: AstrMessageEvent):
         body = self._body(event).strip()  # 取命令参数（可能是任务编码）
         uid = self._uid(event)  # 当前发送者 QQ 号
-        isAdmin = getattr(event, "role", "") == "admin"  # AstrBot 在 process 阶段设置 event.role = "admin"
+        isAdmin = (
+            getattr(event, "role", "") == "admin"
+        )  # AstrBot 在 process 阶段设置 event.role = "admin"
 
         if body and isAdmin:  # 管理员带任务编码 → 取消指定任务
             task = self.tasks.get(body)
@@ -109,6 +111,7 @@ class SuperDraw(Star):
         yield event.plain_result(self.data.preset(self._body(event)))
         event.stop_event()
 
+    @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("生图模型")
     async def cmd_model(self, event: AstrMessageEvent):
         yield event.plain_result(self.data.model(self._body(event)))
@@ -122,9 +125,7 @@ class SuperDraw(Star):
             for t in self.tasks.values():
                 if not t.done():
                     t.cancel()
-        yield event.plain_result(
-            f"生图功能已{'开启' if self.data.enabled else '关闭'}"
-        )
+        yield event.plain_result(f"生图功能已{'开启' if self.data.enabled else '关闭'}")
         event.stop_event()
 
     @filter.permission_type(filter.PermissionType.ADMIN)
