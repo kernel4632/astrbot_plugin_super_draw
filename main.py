@@ -230,7 +230,20 @@ class SuperDraw(Star):
         if from_tool and not self.data.enableTool:
             return "LLM 生图工具当前关闭。"
         if not prompt:
-            return "你要画啥啊，加到后面\n例如：/生图 一只猫坐在窗边看雨"
+            return "\n".join(
+                [
+                    "超级生图插件指令：",
+                    "  /生图 描述 — 生成图片（带图片则图生图）",
+                    "  /生图取消 — 取消最近一个任务",
+                    "  /生图积分 — 查看积分",
+                    "  /生图预设 — 查看/添加/删除预设",
+                    "  /生图模型 — 查看或切换模型（管理员）",
+                    "  /生图开关 — 切换总开关（管理员）",
+                    "  /生图改分 @用户 数量 — 加减积分（管理员）",
+                    "",
+                    "示例：/生图 一只猫坐在窗边看雨",
+                ]
+            )
         uid = self._uid(event)
         if self.data.isBanned(uid):
             return "你在黑名单，画不了"
