@@ -255,7 +255,10 @@ class SuperDraw(Star):
         self._clean()  # 清理已完成的旧任务
         self.taskMeta[tid] = {"uid": uid, "prompt": prompt[:40], "start": time.time()}
         self.tasks[tid] = asyncio.create_task(self._run(tid, req))
-        return f"生图任务已开始：{tid}\n模型：{self.data.modelKey}"
+        info = f"生图任务已开始：{tid}\n模型：{self.data.modelKey}"
+        if req["images"]:
+            info += f"\n参考图：{len(req['images'])}张"  # 有参考图时告诉用户收集了几张
+        return info
 
     async def _run(self, tid: str, req: dict) -> None:
         """后台执行生图。成功发图，失败退积分。"""
