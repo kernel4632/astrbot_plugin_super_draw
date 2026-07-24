@@ -32,7 +32,6 @@ from .tool.file import saveImage
 
 
 class SuperDraw(Star):
-
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
         self.cacheDir = StarTools.get_data_dir() / "cache"  # 图片临时目录
@@ -366,25 +365,18 @@ class SuperDraw(Star):
     # ==================== 图片收集 ====================
 
     async def _images(self, event: AstrMessageEvent) -> list[bytes]:
-        """从消息的图片、回复、@头像、文本 URL 中收集参考图。"""
+        """从消息、回复、合并转发、@头像和文本 URL 中收集参考图。"""
         msg = getattr(
             event, "message_obj", None
         )  # 兼容 ContextWrapper 没有 message_obj
         if not msg or not getattr(msg, "message", None):
             return []
         result: list[bytes] = []
+        forwardIds: set[str] = set()
         for i, c in enumerate(msg.message):
             if i == 0 and isinstance(c, Comp.At):
                 continue  # 跳过开头 @机器人
-            if isinstance(c, Comp.Image):  # 图片组件
-                if d := await self._dl(c.url or c.file):
-                    result.append(d)
-            elif isinstance(c, Comp.Reply) and c.chain:  # 回复里的图片
-                for item in c.chain:
-                    if isinstance(item, Comp.Image):
-                        if d := await self._dl(item.url or item.file):
-                            result.append(d)
-            elif isinstance(c, Comp.At) and str(getattr(c, "qq", "")) not in (
+            if isinstance(c, Comp.At) and str(getattr(c, "qq", "")) not in (
                 "",
                 "all",
             ):  # @用户头像
@@ -392,18 +384,117 @@ class SuperDraw(Star):
                     f"https://q4.qlogo.cn/headimg_dl?dst_uin={c.qq}&spec=640"
                 ):
                     result.append(d)
+            else:
+                await self._collectImages(c, event, result, forwardIds)
+            if len(result) >= 8:
+                return result[:8]
         for url in re.findall(
             r"https?://[^\s]+", event.message_str or ""
         ):  # 文本里的 URL
             if d := await self._dl(url.rstrip("，。,.）)")):
                 result.append(d)
+            if len(result) >= 8:
+                break
         return result[:8]  # 最多 8 张
+
+    async def _collectImages(
+        self,
+        value: Any,
+        event: AstrMessageEvent,
+        result: list[bytes],
+        forwardIds: set[str],
+    ) -> None:
+        """递归读取 AstrBot 组件或 OneBot 合并转发原始数据中的图片。"""
+        if value is None or len(result) >= 8:
+            return
+        if isinstance(value, Comp.Image):
+            src = value.url or getattr(value, "path", "") or value.file
+            if d := await self._dl(src):
+                result.append(d)
+            return
+        if isinstance(value, Comp.Reply):
+            await self._collectImages(value.chain, event, result, forwardIds)
+            return
+        if isinstance(value, Comp.Node):
+            await self._collectImages(value.content, event, result, forwardIds)
+            return
+        if isinstance(value, Comp.Nodes):
+            await self._collectImages(value.nodes, event, result, forwardIds)
+            return
+        if isinstance(value, Comp.Forward):
+            await self._collectForward(value.id, event, result, forwardIds)
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                await self._collectImages(item, event, result, forwardIds)
+                if len(result) >= 8:
+                    break
+            return
+        if not isinstance(value, dict):
+            return
+
+        kind = str(value.get("type") or "").lower()
+        data = value.get("data") if isinstance(value.get("data"), dict) else value
+        if kind == "image":
+            src = data.get("url") or data.get("path") or data.get("file")
+            if d := await self._dl(src):
+                result.append(d)
+            return
+        if kind == "forward":
+            forwardId = data.get("id") or data.get("message_id")
+            if forwardId:
+                await self._collectForward(str(forwardId), event, result, forwardIds)
+            return
+        for key in ("messages", "message", "nodes", "content", "data"):
+            child = value.get(key)
+            if child is not None and child is not value:
+                await self._collectImages(child, event, result, forwardIds)
+                if len(result) >= 8:
+                    break
+
+    async def _collectForward(
+        self,
+        forwardId: str,
+        event: AstrMessageEvent,
+        result: list[bytes],
+        forwardIds: set[str],
+    ) -> None:
+        """通过 OneBot API 展开只有 ID 的 Forward 组件。"""
+        if not forwardId or forwardId in forwardIds:
+            return
+        forwardIds.add(forwardId)
+        bot = getattr(event, "bot", None)
+        callAction = getattr(bot, "call_action", None)
+        if not callable(callAction):
+            return
+        raw = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        selfId = (
+            raw.get("self_id")
+            if isinstance(raw, dict)
+            else getattr(raw, "self_id", None)
+        )
+        routing = {"self_id": selfId} if selfId else {}
+        try:
+            payload = await callAction(
+                "get_forward_msg", message_id=forwardId, **routing
+            )
+        except Exception:
+            try:
+                payload = await callAction("get_forward_msg", id=forwardId, **routing)
+            except Exception as e:
+                logger.warning(f"[SuperDraw] 读取合并聊天记录 {forwardId} 失败: {e}")
+                return
+        await self._collectImages(payload, event, result, forwardIds)
 
     async def _dl(self, src: str | None) -> bytes | None:
         """下载图片。支持 URL 和本地路径。失败返回 None。"""
         if not src:
             return None
         try:
+            if str(src).startswith("base64://"):
+                return base64.b64decode(str(src)[9:])
+            if str(src).startswith("data:image/") and ";base64," in str(src):
+                return base64.b64decode(str(src).split(";base64,", 1)[1])
             if not str(src).startswith(("http://", "https://")):
                 p = Path(src)
                 return p.read_bytes() if p.is_file() else None
