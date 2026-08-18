@@ -482,9 +482,146 @@ class SuperDraw(Star):
             try:
                 payload = await callAction("get_forward_msg", id=forwardId, **routing)
             except Exception as e:
-                logger.warning(f"[SuperDraw] 读取合并聊天记录 {forwardId} 失败: {e}")
-                return
-        await self._collectImages(payload, event, result, forwardIds)
+                logger.error(f"[SuperDraw] 生图失败: {e}")
+                err_text = str(e)
+                if "content_policy_violation" in err_text:
+                    display = "内容被安全策略拦截，请调整提示词或参考图后重试。"
+                elif "API key not valid" in err_text:
+                    display = "API Key 无效，请检查配置。"
+                elif "timeout" in err_text.lower() or "408" in err_text:
+                    display = "生图超时，服务器繁忙，请稍后重试。"
+                else:
+                    display = f"生图失败: {e}"
+                await self.context.send_message(uid, MessageChain().message(display))
+
+            finally:
+                self._taskMeta.pop(tid, None)  # 清理任务元信息
+
+    # ========== 参考图收集 ==========
+
+    async def _collectImages(self, event: AstrMessageEvent) -> list[bytes]:
+        """
+        从消息中收集所有参考图。
+        会检查：消息里的图片、被回复的消息、合并转发消息、@某人的头像、正文里的图片 URL。
+        """
+
+        if not event.message_obj or not event.message_obj.message:
+            return []
+
+        imgs: list[bytes] = []
+
+        # 遍历消息组件，提取图片
+        for i, comp in enumerate(event.message_obj.message):
+            if i == 0 and isinstance(comp, Comp.At):  # 跳过开头的 @机器人
+                continue
+            imgs.extend(await self._extractFromComp(comp, event))
+
+        # 正文里的 HTTP(S) 图片 URL 也当参考图
+        text = event.message_str or ""
+        for token in text.split():
+            if token.startswith(("http://", "https://")) and not token.startswith("https://q4.qlogo.cn"):
+                if b := await self._downloadImage(token):
+                    imgs.append(b)
+
+        return imgs
+
+    async def _extractFromComp(self, comp: Any, event: AstrMessageEvent | None = None) -> list[bytes]:
+        """从单个消息组件里提取图片。递归处理转发、回复等嵌套结构。"""
+
+        # 普通图片
+        if isinstance(comp, Comp.Image):
+            return [b] if (b := await self._downloadImage(comp.url or comp.file)) else []
+
+        # 合并转发消息：需要调用 bot API 拉取内容
+        if isinstance(comp, Comp.Forward):
+            return await self._extractFromForward(comp, event)
+
+        # 转发节点列表
+        if isinstance(comp, Comp.Nodes):
+            result = []
+            for node in comp.nodes:
+                result.extend(await self._extractFromComp(node, event))
+            return result
+
+        # 单个转发节点
+        if isinstance(comp, Comp.Node):
+            result = []
+            for item in comp.content or []:
+                result.extend(await self._extractFromComp(item, event))
+            return result
+
+        # 回复消息：从被回复的消息链里提取图片
+        if isinstance(comp, Comp.Reply) and comp.chain:
+            result = []
+            for item in comp.chain:
+                result.extend(await self._extractFromComp(item, event))
+            return result
+
+        # @某人：把他的头像当参考图（@在开头的已经跳过了，这里只处理正文里的 @）
+        if isinstance(comp, Comp.At) and str(getattr(comp, "qq", "")) not in ("", "all"):
+            return [b] if (b := await self._downloadImage(f"https://q4.qlogo.cn/headimg_dl?dst_uin={comp.qq}&spec=640")) else []
+
+        return []
+
+    async def _extractFromForward(self, comp: Comp.Forward, event: AstrMessageEvent | None) -> list[bytes]:
+        """从合并转发消息中提取图片。需要调用 bot 的 get_forward_msg 接口拉取完整内容。"""
+
+        if event is None:
+            return []
+
+        bot = getattr(event, "bot", None)
+        if not bot or not callable(getattr(bot, "call_action", None)):
+            return []
+
+        # 获取转发消息 ID
+        forwardId = comp.id or self._findForwardId(event)
+        if not forwardId:
+            return []
+
+        # 调用 bot API 拉取转发内容
+        try:
+            resp = await bot.call_action("get_forward_msg", id=forwardId)
+            nodes = resp.get("messages") or resp.get("data", {}).get("messages") or []
+        except Exception as e:
+            logger.warning(f"[SuperDraw] 拉取合并转发消息失败: {e}")
+            return []
+
+        # 从每个节点的内容里提取图片
+        imgs: list[bytes] = []
+        for node in nodes:
+            content = node.get("content") or node.get("message") or []
+            if not isinstance(content, list):
+                continue
+            for seg in content:
+                if seg.get("type") != "image":
+                    continue
+                url = seg.get("data", {}).get("url") or seg.get("data", {}).get("file")
+                if b := await self._downloadImage(url):
+                    imgs.append(b)
+
+        return imgs
+
+    def _findForwardId(self, event: AstrMessageEvent) -> str:
+        """从原始消息中找合并转发的 ID（有些平台不在 Forward 组件里提供 ID，要从原始数据里挖）。"""
+
+        msgObj = getattr(event, "message_obj", None)
+        raw = getattr(msgObj, "raw_message", None) if msgObj else None
+        if raw is None:
+            return ""
+
+        segs = getattr(raw, "message", None) if hasattr(raw, "message") else raw.get("message", [])
+        for seg in segs or []:
+            if seg.get("type") == "forward":
+                return seg.get("data", {}).get("id") or seg.get("data", {}).get("resid") or ""
+        return ""
+
+    # ========== 图片下载 ==========
+
+    async def _downloadImage(self, source: str | None) -> bytes | None:
+        """
+        把 URL 或本地路径转成图片字节。
+        网络图片会先下载到缓存目录再读取；本地文件直接读取。
+        """
 
     async def _dl(self, src: str | None) -> bytes | None:
         """下载图片。支持 URL 和本地路径。失败返回 None。"""

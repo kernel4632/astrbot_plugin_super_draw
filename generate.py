@@ -1,7 +1,7 @@
 """
 超级生图插件的生图指令。
 
-这个文件只负责“把提示词和参考图交给模型，然后拿回图片 bytes”。
+这个文件只负责"把提示词和参考图交给模型，然后拿回图片 bytes"。
 它不认识 AstrBot，不知道用户是谁，也不负责保存图片；这样写的好处是：以后想在测试脚本、网页后台、命令行里复用生图能力，只要调用 makeImages() 就行。
 
 数据从 data.py 来：main.py 会把 providers、当前模型下标、提示词、参考图、比例、质量、数量传进来。
@@ -70,7 +70,7 @@ async def makeImages(
             apiKey = keyGetter(provider) if keyGetter else _firstKey(provider)
             if provider.get("apiType") == "gemini":
                 return await _callGemini(provider, apiKey, prompt, images, size, quality, n)
-            return await _callOpenAi(provider, apiKey, prompt, images, quality, n)
+            return await _callOpenAi(provider, apiKey, prompt, images, size, quality, n)
         except Exception as error:
             lastError = error
             if attempt >= retryCount:
@@ -106,7 +106,7 @@ def _firstKey(provider: dict[str, Any]) -> str:
 _OA_QUALITIES = {"low", "medium", "high"}  # OpenAI 的 auto 不传参数，让服务端自己决定
 
 
-async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images: list[bytes], quality: str, n: int) -> list[bytes]:
+async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images: list[bytes], size: str, quality: str, n: int) -> list[bytes]:
     """调用 OpenAI 兼容接口；不传 size，由模型根据提示词自动决定比例。"""
 
     client = _openAiClient(provider.get("baseUrl") or "https://api.openai.com", apiKey, int(provider.get("timeout", 180)))
@@ -118,6 +118,10 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
         "n": count,
         "response_format": "url",  # 不强制 b64_json；url 格式更通用，兼容所有实现
     }
+    if size and size != "auto":
+        request["size"] = size
+    elif size == "auto":
+        request["size"] = "auto"
     if quality in _OA_QUALITIES:
         request["quality"] = quality
 
