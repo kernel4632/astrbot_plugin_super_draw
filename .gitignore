@@ -11,4 +11,5 @@ uv.lock
 test_output/
 # AstrBot 运行时自动生成的数据目录（包含 cmd_config.json、t2i_templates 等）
 data/
-tests/
+tests/*
+!tests/test_image_generation.py

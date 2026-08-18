@@ -70,7 +70,7 @@ async def makeImages(
             apiKey = keyGetter(provider) if keyGetter else _firstKey(provider)
             if provider.get("apiType") == "gemini":
                 return await _callGemini(provider, apiKey, prompt, images, size, quality, n)
-            return await _callOpenAi(provider, apiKey, prompt, images, size, quality, n)
+            return await _callOpenAi(provider, apiKey, prompt, images, quality, n)
         except Exception as error:
             lastError = error
             if attempt >= retryCount:
@@ -103,23 +103,11 @@ def _firstKey(provider: dict[str, Any]) -> str:
     return str(keys[0])
 
 
-_OA_SIZES = {
-    "auto": "1024x1024",
-    "1:1": "1024x1024",
-    "16:9": "1536x1024",
-    "9:16": "1024x1536",
-    "3:2": "1536x1024",
-    "2:3": "1024x1536",
-    "1024x1024": "1024x1024",
-    "1536x1024": "1536x1024",
-    "1024x1536": "1024x1536",
-}
-
 _OA_QUALITIES = {"low", "medium", "high"}  # OpenAI 的 auto 不传参数，让服务端自己决定
 
 
-async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images: list[bytes], size: str, quality: str, n: int) -> list[bytes]:
-    """调用 OpenAI 兼容接口；有参考图走 edit，没有参考图走 generate。"""
+async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images: list[bytes], quality: str, n: int) -> list[bytes]:
+    """调用 OpenAI 兼容接口；不传 size，由模型根据提示词自动决定比例。"""
 
     client = _openAiClient(provider.get("baseUrl") or "https://api.openai.com", apiKey, int(provider.get("timeout", 180)))
     count = max(1, min(8, int(n)))
@@ -128,7 +116,6 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
         "model": provider["model"],
         "prompt": prompt,
         "n": count,
-        "size": _OA_SIZES.get(size, "1024x1024"),
         "response_format": "url",  # 不强制 b64_json；url 格式更通用，兼容所有实现
     }
     if quality in _OA_QUALITIES:
