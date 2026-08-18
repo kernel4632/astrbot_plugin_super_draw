@@ -1,34 +1,46 @@
 {
   "enabled": {
-    "description": "启用插件",
-    "hint": "关闭后插件将停止响应命令、停止注册 LLM 工具，相当于安全开关",
+    "description": "启用生图",
+    "hint": "总开关，关闭后所有生图命令和 LLM 工具都不可用",
     "type": "bool",
     "default": true
   },
   "enable_llm_tool": {
     "description": "启用 LLM 工具",
-    "hint": "启用后，LLM 可以在对话中自动调用图像生成功能",
+    "hint": "允许 Bot 自动调用 super_draw 工具生图；关闭后只能用 /生图 命令",
     "type": "bool",
     "default": true
   },
+  "ban_list": {
+    "description": "生图黑名单",
+    "hint": "填写用户 ID，黑名单中的用户无法使用生图功能；Bot 工具可通过 super_draw_ban 管理",
+    "type": "list",
+    "default": []
+  },
+  "debug_mode": {
+    "description": "调试模式",
+    "hint": "开启后会在日志中输出更多调试信息",
+    "type": "bool",
+    "default": false
+  },
   "api_providers": {
-    "type": "template_list",
     "description": "API 供应商配置",
-    "hint": "配置多个图像生成 API 供应商，每个供应商可配置多个模型",
+    "hint": "支持 OpenAI 兼容接口和 Gemini 官方接口，可添加多个供应商和模型",
+    "type": "template_list",
     "templates": {
       "openai": {
-        "name": "OpenAI 接口",
-        "hint": "使用 OpenAI 兼容的图像生成接口，推荐使用 gpt-image 系列模型",
+        "name": "OpenAI 兼容接口",
+        "hint": "适用于 OpenAI、硅基流动、DeepSeek 等兼容接口",
+        "display_item": "name",
         "items": {
           "name": {
             "description": "供应商名称",
-            "hint": "用于区分不同供应商，生图模型格式为 '供应商名称/模型名称'",
+            "hint": "用来区分不同供应商，例如 GPT-Image、硅基流动",
             "type": "string",
             "default": "OpenAI"
           },
           "api_type": {
             "description": "接口类型",
-            "hint": "openai 表示 OpenAI 兼容接口；gemini 表示 Google Gemini 官方生图接口",
             "type": "string",
             "default": "openai",
             "options": [
@@ -37,65 +49,63 @@
             ]
           },
           "base_url": {
-            "description": "API Base URL",
-            "hint": "OpenAI 兼容接口地址，留空使用默认地址",
+            "description": "请求地址",
+            "hint": "OpenAI 兼容接口的 Base URL，不需要带 /v1",
             "type": "string",
-            "default": ""
+            "default": "https://api.openai.com"
           },
           "api_keys": {
             "description": "API Keys",
-            "hint": "支持多个 Key 轮换使用",
+            "hint": "多个 Key 会自动轮换使用",
             "type": "list",
             "default": []
           },
           "available_models": {
             "description": "可用模型列表",
-            "hint": "用于 /生图模型 命令切换时的可选模型",
+            "hint": "填写该供应商支持的生图模型名称",
             "type": "list",
-            "default": [
-              "gpt-image-2"
-            ]
+            "default": []
           }
         }
       },
       "gemini": {
-        "name": "Gemini 接口",
-        "hint": "使用 Google Gemini 官方生图接口，推荐使用 gemini-3.1-flash-image / gemini-3-pro-image 模型",
+        "name": "Gemini 官方接口",
+        "hint": "适用于 Google Gemini 官方生图 API",
+        "display_item": "name",
         "items": {
           "name": {
             "description": "供应商名称",
-            "hint": "用于区分不同供应商，生图模型格式为 '供应商名称/模型名称'",
+            "hint": "用来区分不同供应商",
             "type": "string",
             "default": "Gemini"
           },
           "api_type": {
             "description": "接口类型",
-            "hint": "这里必须保持 gemini，插件会用 Google Gen AI SDK 调用官方接口",
             "type": "string",
             "default": "gemini",
             "options": [
+              "openai",
               "gemini"
             ]
           },
           "base_url": {
-            "description": "API Base URL",
-            "hint": "Gemini 官方接口不需要填写 Base URL，保持为空即可",
+            "description": "请求地址",
+            "hint": "留空使用官方地址；如果用代理填代理地址",
             "type": "string",
             "default": ""
           },
           "api_keys": {
-            "description": "Gemini API Keys",
-            "hint": "填写 Gemini API Key，支持多个 Key 轮换使用",
+            "description": "API Keys",
+            "hint": "多个 Key 会自动轮换使用",
             "type": "list",
             "default": []
           },
           "available_models": {
             "description": "可用模型列表",
-            "hint": "用于 /生图模型 命令切换时的可选 Gemini 生图模型",
+            "hint": "填写 Gemini 生图模型名称",
             "type": "list",
             "default": [
-              "gemini-3.1-flash-image",
-              "gemini-3-pro-image"
+              "gemini-3.1-flash-image-preview"
             ]
           }
         }
@@ -104,118 +114,181 @@
   },
   "generation": {
     "description": "生图配置",
-    "hint": "图像生成的行为配置",
+    "hint": "控制生图行为的核心参数",
     "type": "object",
     "items": {
       "model": {
         "description": "当前生图模型",
-        "hint": "格式为 '供应商名称/模型名称'，留空自动使用第一个可用模型。可通过 /生图模型 命令切换",
+        "hint": "格式为 供应商名/模型名，留空自动选第一个可用模型",
         "type": "string",
         "default": ""
       },
       "max_retry_attempts": {
         "description": "最大重试次数",
-        "hint": "生图失败时的重试次数",
+        "hint": "单次生图请求失败后的最大重试次数",
         "type": "int",
-        "slider": {
-          "min": 0,
-          "max": 10,
-          "step": 1
-        },
-        "default": 3
-      },
-      "max_concurrent_tasks": {
-        "description": "最大并发任务数",
-        "hint": "同时生成图片的最大数量",
-        "type": "int",
+        "default": 1,
         "slider": {
           "min": 1,
           "max": 10,
           "step": 1
-        },
-        "default": 3
+        }
       },
-      "default_quality": {
-        "description": "默认质量",
-        "hint": "图片质量等级，low 省钱快速，medium 平衡，high 最清晰",
-        "type": "string",
-        "default": "medium",
-        "options": [
-          "low",
-          "medium",
-          "high"
-        ]
+      "timeout": {
+        "description": "生图超时时间（秒）",
+        "hint": "单次 API 请求的超时时间",
+        "type": "int",
+        "default": 600,
+        "slider": {
+          "min": 30,
+          "max": 600,
+          "step": 10
+        }
       },
-      "default_size": {
-        "description": "默认尺寸/比例",
-        "hint": "默认生成的图片比例",
-        "type": "string",
-        "default": "auto",
-        "options": [
-          "auto",
-          "1:1",
-          "16:9",
-          "9:16",
-          "3:2",
-          "2:3"
-        ]
-      },
-      "save_format": {
-        "description": "图片保存格式",
-        "hint": "生图结果转换为指定格式发送，推荐 jpeg 或 webp 省带宽",
-        "type": "string",
-        "default": "png",
-        "options": [
-          "png",
-          "jpeg",
-          "webp"
-        ]
+      "max_queue_size": {
+        "description": "最大队列长度",
+        "hint": "同时允许排队的生图任务数量，超过后拒绝新任务",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 1,
+          "max": 100,
+          "step": 1
+        }
       }
     }
   },
-  "user_limits": {
-    "description": "用户限制配置",
-    "hint": "针对用户的生图频率和数量限制",
+  "points": {
+    "description": "积分制",
+    "hint": "通过积分控制生图使用频率，群友发言赚积分，生图消耗积分",
     "type": "object",
     "items": {
-      "rate_limit_seconds": {
-        "description": "速率限制（秒）",
-        "hint": "单个用户两次生图请求之间的最小间隔，0 表示不限制",
+      "enable_points": {
+        "description": "启用积分制",
+        "hint": "关闭后生图不消耗积分，所有人都可以无限使用",
+        "type": "bool",
+        "default": true
+      },
+      "points_per_message": {
+        "description": "每次有效发言获得积分",
         "type": "int",
+        "default": 1,
         "slider": {
           "min": 0,
-          "max": 60,
-          "step": 1
-        },
-        "default": 0
-      },
-      "enable_daily_limit": {
-        "description": "启用每日生图数量限制",
-        "hint": "限制每个用户每天的生图次数",
-        "type": "bool",
-        "default": false
-      },
-      "daily_limit_count": {
-        "description": "每日生图数量限制",
-        "hint": "每个用户每天最多生成的图片数量",
-        "type": "int",
-        "slider": {
-          "min": 1,
           "max": 50,
           "step": 1
-        },
-        "default": 10
+        }
+      },
+      "message_point_cooldown_seconds": {
+        "description": "发言加分冷却（秒）",
+        "hint": "同一用户在冷却时间内只算一次有效发言",
+        "type": "int",
+        "default": 60,
+        "slider": {
+          "min": 0,
+          "max": 3600,
+          "step": 5
+        }
+      },
+      "draw_cost_per_image": {
+        "description": "每次生图消耗积分",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 1
+        }
+      },
+      "bad_request_penalty_points": {
+        "description": "400错误扣除积分",
+        "hint": "生图因内容安全等原因返回 400 时额外扣除的积分，余额最低为 0",
+        "type": "int",
+        "default": 50,
+        "slider": {
+          "min": 0,
+          "max": 100,
+          "step": 1
+        }
+      },
+      "new_user_points": {
+        "description": "新用户初始积分",
+        "hint": "第一次见到用户时赠送的积分",
+        "type": "int",
+        "default": 10,
+        "slider": {
+          "min": 0,
+          "max": 1000,
+          "step": 5
+        }
+      },
+      "enable_data_tools": {
+        "description": "Bot 数据工具",
+        "hint": "允许 LLM 通过 super_draw_data 工具查询和修改积分数据",
+        "type": "bool",
+        "default": true
+      }
+    }
+  },
+  "commentary": {
+    "description": "生图后评价",
+    "hint": "仅在 LLM 工具调用 super_draw 生图成功后触发，用户命令生图不触发",
+    "type": "object",
+    "items": {
+      "enable_commentary": {
+        "description": "启用工具生图后评价",
+        "hint": "Bot 通过工具生图成功后，会结合上下文自然评价图片",
+        "type": "bool",
+        "default": true
+      },
+      "commentary_provider_id": {
+        "description": "生图后评价模型",
+        "hint": "填写 AstrBot 已配置的聊天模型 provider_id；留空使用当前会话模型",
+        "type": "string",
+        "default": ""
+      },
+      "commentary_template": {
+        "description": "生图后评价模板",
+        "hint": "可用变量：{prompt} 用户需求、{model} 生图模型、{context} 会话历史、{images} 图片信息、{max_length} 最大字数",
+        "type": "text",
+        "default": "你是群聊里的 Bot，刚刚完成了一次生图。结合群聊上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n图片信息：\n{images}\n要求：最多 {max_length} 字，接续之前发起请求的人的那种回复，尽可能的模仿群友说话风格，根据上下文。"
+      },
+      "commentary_max_length": {
+        "description": "生图后评价最大字数",
+        "hint": "控制 Bot 追评长度，避免刷屏",
+        "type": "int",
+        "default": 150,
+        "slider": {
+          "min": 20,
+          "max": 500,
+          "step": 10
+        }
       }
     }
   },
   "presets": {
-    "description": "预设提示词",
-    "hint": "预定义的图片生成提示词模板。格式: '预设名称:提示词内容'",
-    "type": "list",
-    "default": [
-      "复刻表情包:图1人物换成图2，表情、动作及画风以图1中的为准，注意图2人物眼睛颜色以及穿着不要变，图片比例1:1",
-      "鬼图:Convert the Input Image into a Convincing, Found-Footage Style Cryptid Sighting Photograph 1. The image should depict a [insert creature name or description - e.g., slender, pale humanoid; multi-limbed, insect-like entity; shadowy, canine-like beast], and the creature’s appearance must be highly similar to that in the original image. The creature should be spotted in a hyperrealistic and eerily desolate location, such as [e.g., an abandoned industrial complex at night, a remote, snow-covered mountain pass, the murky depths of a forgotten urban canal, a desolate rural road in the dead of winter].​2. The shot must appear accidental, amateurish, and raw, as if captured spontaneously by a low-fidelity device like a [e.g., degraded VHS camcorder, grainy security camera, old disposable camera with flash, an infrared trail cam that's seen better days].​3. To maximize the unsettling authenticity, the image quality should be significantly imperfect: featuring extreme [e.g., heavy digital noise, pronounced film grain, severe motion blur making details indistinct, a strong, disorienting lens flare, being significantly out of focus, or displaying visible static and tracking lines]. The creature should be partially obscured and difficult to clearly discern, perhaps hidden by [e.g., dense, skeletal tree branches; thick, unnatural fog; distorted reflections on murky water; the jagged silhouette of derelict machinery; or existing within deep, oppressive shadows].​4. The lighting is critically dim and unsettling, possibly at [e.g., the darkest hour before dawn, a moonless midnight, or starkly illuminated by a harsh, direct, and slightly malfunctioning camera flash that overexposes parts of the scene].5. The overall feeling should evoke profound unease, dread, and a sense of witnessing something truly inexplicable and horrifying. Emphasize an atmosphere of isolation, decay, and the uncanny.​6. Keywords: cryptozoology, urban legend, paranormal, faked sighting, unsettling, horror, cryptid, grotesque, eerie, found footage, degraded quality, creature feature.",
-      "换衣服:给角色换上任意一套服装，并搭配合适的表情和动作"
-    ]
+    "description": "预设配置",
+    "hint": "预设提示词，用户可通过 /生图预设 管理，也可在此处预配置",
+    "type": "template_list",
+    "templates": {
+      "preset": {
+        "name": "预设项",
+        "display_item": "name",
+        "items": {
+          "name": {
+            "description": "预设名称",
+            "hint": "用户输入 /生图 预设名称 描述 时会自动套用",
+            "type": "string",
+            "default": ""
+          },
+          "prompt": {
+            "description": "提示词内容",
+            "hint": "预设的完整提示词，会追加在用户描述前面",
+            "type": "text",
+            "default": ""
+          }
+        }
+      }
+    }
   }
 }

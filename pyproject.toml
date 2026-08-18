@@ -1,11 +1,12 @@
 [project]
 name = "astrbot_plugin_super_draw"
-version = "1.0.1"
-description = "AstrBot 通用图像生成插件，基于 OpenAI 兼容接口的文生图与图生图，支持参考图、预设和 LLM 工具调用。"
+version = "3.0.0"
+description = "AstrBot 超级生图插件，支持 OpenAI 兼容接口和 Gemini 官方接口，面向群聊命令与 LLM 工具调用。"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
     "openai>=1.0.0",
+    "google-genai>=1.33.0",
     "pillow>=10.0.0",
     "pydantic>=2.0.0",
 ]
