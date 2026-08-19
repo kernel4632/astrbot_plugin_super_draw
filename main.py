@@ -484,6 +484,24 @@ class SuperDraw(Star):
             except Exception as e:
                 logger.warning(f"[SuperDraw] 读取合并转发消息失败: {e}")
 
+    async def _dl(self, src: str | None) -> bytes | None:
+        """下载图片。支持 URL 和本地路径。失败返回 None。"""
+        if not src:
+            return None
+        try:
+            if str(src).startswith("base64://"):
+                return base64.b64decode(str(src)[9:])
+            if str(src).startswith("data:image/") and ";base64," in str(src):
+                return base64.b64decode(str(src).split(";base64,", 1)[1])
+            if not str(src).startswith(("http://", "https://")):
+                p = Path(src)
+                return p.read_bytes() if p.is_file() else None
+            f = self.cacheDir / f"ref_{hashlib.md5(src.encode()).hexdigest()[:12]}"
+            dl = await download_image_by_url(src, path=str(f))
+            return Path(dl).read_bytes() if dl else None
+        except:
+            return None
+
     # ==================== 工具方法 ====================
 
     def _uid(self, event: AstrMessageEvent) -> str:
