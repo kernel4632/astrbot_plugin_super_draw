@@ -1,4 +1,4 @@
-"""
+'''
 AstrBot 超级生图插件入口。
 
 这个文件是整个插件和 AstrBot 框架的唯一连接点。
@@ -17,7 +17,7 @@ AstrBot 超级生图插件入口。
 
 LLM 工具：
     super_draw            LLM 自动调用的生图工具，参数更精细
-"""
+'''
 
 from __future__ import annotations
 
@@ -27,6 +27,7 @@ import time  # 任务计时
 from pathlib import Path
 from typing import Any
 
+import aiohttp  # 修复：用于带 UA 的参考图预拉取与格式校验
 import astrbot.api.message_components as Comp  # 消息组件：Image、Forward、Reply 等
 from astrbot.api import logger  # 日志
 from astrbot.api.event import AstrMessageEvent, MessageChain, filter  # 事件和消息链
@@ -515,25 +516,63 @@ class SuperDraw(Star):
         """
         把 URL 或本地路径转成图片字节。
         网络图片会先下载到缓存目录再读取；本地文件直接读取。
+        修复点：
+        1. QQ 多媒体 rkey 链接时效短，下载失败时自动重试一次；
+        2. 下载后校验 Content-Type 和魔数头，防止把 JSON/HTML 报错体当图片喂给 PIL。
         """
 
         if not source:
             return None
 
-        try:
-            # 本地文件直接读
-            if not source.startswith("http"):
+        # 本地文件直接读
+        if not source.startswith("http"):
+            try:
                 p = Path(source)
                 return p.read_bytes() if p.is_file() else None
+            except Exception:
+                return None
 
-            # 网络图片先下载到缓存目录
-            fn = str(self.cacheDir / f"ref_{hashlib.md5(source.encode()).hexdigest()[:8]}")
-            downloaded = await download_image_by_url(source, path=fn)
-            if downloaded:
-                return Path(downloaded).read_bytes()
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36",
+            "Referer": source.split("?")[0],
+        }
 
-        except Exception:
-            pass
+        for attempt in range(2):
+            try:
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(source, headers=headers, timeout=aiohttp.ClientTimeout(total=20)) as resp:
+                        ctype = (resp.headers.get("Content-Type") or "").lower()
+                        raw = await resp.read()
+
+                        # HTTP 层校验
+                        if resp.status != 200 or len(raw) < 64:
+                            logger.warning(f"[SuperDraw] 参考图拉取异常 status={resp.status} size={len(raw)}")
+                            continue
+
+                        # Content-Type 校验：必须是图片
+                        if ctype and not ctype.startswith("image/"):
+                            head_text = raw[:120].decode(errors="replace")
+                            logger.warning(f"[SuperDraw] 参考图非图片响应 type={ctype} body={head_text!r}")
+                            continue
+
+                        # 魔数校验：PNG / JPEG / GIF / WEBP
+                        magic_ok = (
+                            raw[:8] == b"\x89PNG\r\n\x1a\n"
+                            or raw[:3] == b"\xff\xd8\xff"
+                            or raw[:6] in (b"GIF87a", b"GIF89a")
+                            or (raw[:4] == b"RIFF" and raw[8:12] == b"WEBP")
+                        )
+                        if not magic_ok:
+                            head_hex = raw[:16].hex(" ")
+                            logger.warning(f"[SuperDraw] 参考图魔数不匹配 hex={head_hex}")
+                            continue
+
+                        return raw
+
+            except asyncio.TimeoutError:
+                logger.warning(f"[SuperDraw] 参考图拉取超时 attempt={attempt + 1}")
+            except Exception as e:
+                logger.warning(f"[SuperDraw] 参考图下载异常: {e}")
 
         return None
 
