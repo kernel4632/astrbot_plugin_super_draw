@@ -155,6 +155,28 @@
           "max": 100,
           "step": 1
         }
+      },
+      "max_cache_files": {
+        "description": "缓存图片保留上限",
+        "hint": "缓存目录最多保留这么多张生成的图片，超出的旧图会被定时删除",
+        "type": "int",
+        "default": 200,
+        "slider": {
+          "min": 10,
+          "max": 10000,
+          "step": 10
+        }
+      },
+      "cleanup_interval_hours": {
+        "description": "缓存清理间隔（小时）",
+        "hint": "每隔多少小时自动清理一次缓存目录中的旧图片",
+        "type": "int",
+        "default": 24,
+        "slider": {
+          "min": 1,
+          "max": 168,
+          "step": 1
+        }
       }
     }
   },

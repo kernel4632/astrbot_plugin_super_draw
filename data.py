@@ -43,6 +43,12 @@ class Data:
         self.maxQueue = self._int(
             gen.get("max_queue_size", 20), 20, 1, 100
         )  # 最大排队任务数
+        self.maxCacheCount = self._int(
+            gen.get("max_cache_files", 200), 200, 10, 10000
+        )  # 缓存目录最多保留的图片数，超出的旧图定时删除
+        self.cleanupIntervalHours = self._int(
+            gen.get("cleanup_interval_hours", 24), 24, 1, 720
+        )  # 缓存清理间隔（小时）
 
         pts = config.get("points", {}) or {}  # 积分配置区块
         self.enablePoints = bool(pts.get("enable_points", True))  # 是否启用积分

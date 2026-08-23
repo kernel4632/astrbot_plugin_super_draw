@@ -13,3 +13,5 @@ test_output/
 data/
 tests/*
 !tests/test_image_generation.py
+!tests/conftest.py
+!tests/test_cache_cleanup.py

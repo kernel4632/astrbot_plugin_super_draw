@@ -40,11 +40,10 @@ from astrbot.api.event import (
 from astrbot.api.star import Context, Star  # 插件基类
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.star.star_tools import StarTools  # 获取数据目录
-from astrbot.core.utils.io import download_image_by_url
 
 from .data import Data
 from .generate import closeClients, makeImages
-from .tool.file import saveImage
+from .tool.file import cleanCache, saveImage
 
 
 class SuperDraw(Star):
@@ -54,6 +53,7 @@ class SuperDraw(Star):
         self.data = Data(config, StarTools.get_data_dir())  # 数据中心
         self.tasks: dict[str, asyncio.Task] = {}  # taskId → asyncio.Task
         self.taskMeta: dict[str, dict] = {}  # taskId → {uid, prompt, start}
+        self._tasks: dict[str, asyncio.Task] = {}  # 常驻后台任务名 → asyncio.Task
 
     async def initialize(self) -> None:
         self.cacheDir.mkdir(parents=True, exist_ok=True)
@@ -61,13 +61,15 @@ class SuperDraw(Star):
             logger.error("[SuperDraw] 未配置模型，请在 api_providers 填写 Key 和模型。")
         else:
             logger.info(f"[SuperDraw] 超级生图插件 启动，模型：{self.data.modelKey}")
+        self._startBg(self._cacheLoop(), "cacheLoop")  # 启动定时清缓存
 
     async def terminate(self) -> None:
-        for t in self.tasks.values():  # 取消所有后台任务
+        allTasks = list(self.tasks.values()) + list(self._tasks.values())
+        for t in allTasks:  # 取消所有后台任务（生图 + 常驻）
             if not t.done():
                 t.cancel()
-        if self.tasks:
-            await asyncio.gather(*self.tasks.values(), return_exceptions=True)
+        if allTasks:
+            await asyncio.gather(*allTasks, return_exceptions=True)
         self.tasks.clear()
         self.taskMeta.clear()
         await closeClients()  # 关闭 HTTP 客户端
@@ -490,6 +492,7 @@ class SuperDraw(Star):
             else getattr(raw, "self_id", None)
         )
         routing = {"self_id": selfId} if selfId else {}
+        payload = None
         try:
             payload = await callAction(
                 "get_forward_msg", message_id=forwardId, **routing
@@ -500,115 +503,15 @@ class SuperDraw(Star):
             except Exception as e:
                 logger.warning(f"[SuperDraw] 读取合并转发消息失败: {e}")
 
-        if not event.message_obj or not event.message_obj.message:
-            return []
-
-        imgs: list[bytes] = []
-
-        # 遍历消息组件，提取图片
-        for i, comp in enumerate(event.message_obj.message):
-            if i == 0 and isinstance(comp, Comp.At):  # 跳过开头的 @机器人
-                continue
-            imgs.extend(await self._extractFromComp(comp, event))
-
-        # 正文里的 HTTP(S) 图片 URL 也当参考图
-        text = event.message_str or ""
-        for token in text.split():
-            if token.startswith(("http://", "https://")) and not token.startswith("https://q4.qlogo.cn"):
-                if b := await self._downloadImage(token):
-                    imgs.append(b)
-
-        return imgs
-
-    async def _extractFromComp(self, comp: Any, event: AstrMessageEvent | None = None) -> list[bytes]:
-        """从单个消息组件里提取图片。递归处理转发、回复等嵌套结构。"""
-
-        # 普通图片
-        if isinstance(comp, Comp.Image):
-            return [b] if (b := await self._downloadImage(comp.url or comp.file)) else []
-
-        # 合并转发消息：需要调用 bot API 拉取内容
-        if isinstance(comp, Comp.Forward):
-            return await self._extractFromForward(comp, event)
-
-        # 转发节点列表
-        if isinstance(comp, Comp.Nodes):
-            result = []
-            for node in comp.nodes:
-                result.extend(await self._extractFromComp(node, event))
-            return result
-
-        # 单个转发节点
-        if isinstance(comp, Comp.Node):
-            result = []
-            for item in comp.content or []:
-                result.extend(await self._extractFromComp(item, event))
-            return result
-
-        # 回复消息：从被回复的消息链里提取图片
-        if isinstance(comp, Comp.Reply) and comp.chain:
-            result = []
-            for item in comp.chain:
-                result.extend(await self._extractFromComp(item, event))
-            return result
-
-        # @某人：把他的头像当参考图（@在开头的已经跳过了，这里只处理正文里的 @）
-        if isinstance(comp, Comp.At) and str(getattr(comp, "qq", "")) not in ("", "all"):
-            return [b] if (b := await self._downloadImage(f"https://q4.qlogo.cn/headimg_dl?dst_uin={comp.qq}&spec=640")) else []
-
-        return []
-
-    async def _extractFromForward(self, comp: Comp.Forward, event: AstrMessageEvent | None) -> list[bytes]:
-        """从合并转发消息中提取图片。需要调用 bot 的 get_forward_msg 接口拉取完整内容。"""
-
-        if event is None:
-            return []
-
-        bot = getattr(event, "bot", None)
-        if not bot or not callable(getattr(bot, "call_action", None)):
-            return []
-
-        # 获取转发消息 ID
-        forwardId = comp.id or self._findForwardId(event)
-        if not forwardId:
-            return []
-
-        # 调用 bot API 拉取转发内容
-        try:
-            resp = await bot.call_action("get_forward_msg", id=forwardId)
-            nodes = resp.get("messages") or resp.get("data", {}).get("messages") or []
-        except Exception as e:
-            logger.warning(f"[SuperDraw] 拉取合并转发消息失败: {e}")
-            return []
-
-        # 从每个节点的内容里提取图片
-        imgs: list[bytes] = []
-        for node in nodes:
-            content = node.get("content") or node.get("message") or []
-            if not isinstance(content, list):
-                continue
-            for seg in content:
-                if seg.get("type") != "image":
-                    continue
-                url = seg.get("data", {}).get("url") or seg.get("data", {}).get("file")
-                if b := await self._downloadImage(url):
-                    imgs.append(b)
-
-        return imgs
-
-    def _findForwardId(self, event: AstrMessageEvent) -> str:
-        """从原始消息中找合并转发的 ID（有些平台不在 Forward 组件里提供 ID，要从原始数据里挖）。"""
-
-        msgObj = getattr(event, "message_obj", None)
-        raw = getattr(msgObj, "raw_message", None) if msgObj else None
-        if raw is None:
-            return ""
-
-        segs = getattr(raw, "message", None) if hasattr(raw, "message") else raw.get("message", [])
-        for seg in segs or []:
-            if seg.get("type") == "forward":
-                return seg.get("data", {}).get("id") or seg.get("data", {}).get("resid") or ""
-        return ""
+        nodes = (
+            payload.get("messages")
+            or (payload.get("data") or {}).get("messages")
+            or []
+        ) if isinstance(payload, dict) else []
+        for node in nodes:  # 展开后的每条消息，交给通用递归收集器提图
+            if isinstance(node, dict):
+                content = node.get("content") or node.get("message") or []
+                await self._collectImagesRecursive(content, event, result, forwardIds)
 
     # ========== 图片下载 ==========
 
@@ -676,6 +579,20 @@ class SuperDraw(Star):
 
         return None
 
+    async def _dl(self, src: str | None) -> bytes | None:
+        """统一图片入口。base64/data URI 直接解码，其余交给带校验的 _downloadImage。"""
+        if not src:
+            return None
+        s = str(src)
+        try:
+            if s.startswith("base64://"):
+                return base64.b64decode(s[9:])
+            if s.startswith("data:image/") and ";base64," in s:
+                return base64.b64decode(s.split(";base64,", 1)[1])
+        except Exception:
+            return None
+        return await self._downloadImage(s)
+
     # ========== 后台任务管理 ==========
 
     def _startBg(self, coro, name: str):
@@ -705,11 +622,18 @@ class SuperDraw(Star):
             or "bad request" in t
         )
 
+    async def _cacheLoop(self) -> None:
+        """常驻后台：定时清理缓存目录，只保留最近 maxCacheCount 张图。"""
         while True:
             try:
-                await cleanCache(self.cacheDir, self.data.maxCacheCount)
-                await asyncio.sleep(self.data.cleanupIntervalHours * 3600)  # 按配置的小时数等待
+                deleted = await cleanCache(self.cacheDir, self.data.maxCacheCount)
+                if deleted and self.data.debug:
+                    logger.info(f"[SuperDraw] 缓存清理删除 {deleted} 个旧文件")
+                await asyncio.sleep(
+                    self.data.cleanupIntervalHours * 3600
+                )  # 按配置的小时数等待
             except asyncio.CancelledError:
                 break  # 插件关闭时正常退出
-            except Exception:
+            except Exception as e:
+                logger.warning(f"[SuperDraw] 缓存清理失败: {e}")
                 await asyncio.sleep(60)  # 出错了等一分钟再试

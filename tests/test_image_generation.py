@@ -27,7 +27,7 @@ def _load_generate():
 generate = _load_generate()
 
 
-def test_openai_request_leaves_size_to_model(monkeypatch):
+def test_openai_request_passes_auto_size_and_count(monkeypatch):
     client = SimpleNamespace(
         images=SimpleNamespace(
             generate=AsyncMock(
@@ -43,11 +43,14 @@ def test_openai_request_leaves_size_to_model(monkeypatch):
             "test-key",
             "一张横向风景图",
             [],
-            "auto",
-            1,
+            "auto",  # size
+            "auto",  # quality：不在 _OA_QUALITIES 里，不应出现在请求里
+            1,  # n
         )
     )
 
     assert result == [b"image"]
     request = client.images.generate.call_args.kwargs
-    assert "size" not in request
+    assert request["size"] == "auto"  # 新版显式把 auto 传给服务端
+    assert request["n"] == 1
+    assert "quality" not in request
