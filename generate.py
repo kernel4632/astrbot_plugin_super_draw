@@ -165,7 +165,11 @@ async def _callOpenAiJsonEdit(
 ) -> list[bytes]:
     """调用要求 application/json 的 OpenAI 兼容改图接口。"""
 
-    request["image"] = _prepareOpenAiImageDataUris(images)
+    imageDataUris = _prepareOpenAiImageDataUris(images)
+    if not imageDataUris:
+        raise ValueError("OpenAI 改图至少需要一张参考图。")
+    # 多数 JSON 兼容实现把单张图定义为字符串；只有多图时才使用数组。
+    request["image"] = imageDataUris[0] if len(imageDataUris) == 1 else imageDataUris
     baseUrl = (provider.get("baseUrl") or "https://api.openai.com").rstrip("/")
     apiUrl = baseUrl if baseUrl.endswith("/v1") else f"{baseUrl}/v1"
     timeoutSec = int(provider.get("timeout", 180))

@@ -94,7 +94,7 @@ def test_openai_edit_uses_json_data_uris(monkeypatch):
     assert result == [b"image"]
     assert request["url"] == "https://example.com/v1/images/edits"
     assert request["headers"]["Authorization"] == "Bearer test-key"
-    assert request["json"]["image"] == ["data:image/png;base64,aW1hZ2U="]
+    assert request["json"]["image"] == "data:image/png;base64,aW1hZ2U="
 
 
 def test_openai_chat_dispatches_and_decodes_data_uri(monkeypatch):
