@@ -35,7 +35,6 @@ class Data:
         ]  # 黑名单
         self.debug = bool(config.get("debug_mode", False))  # 调试日志
         self.richTaskFeedback = bool(config.get("rich_task_feedback", False))
-        self.taskFaceId = self._int(config.get("task_face_id", 21), 21, 1, 999)
 
         gen = config.get("generation", {}) or {}  # 生图配置区块
         self.maxRetry = self._int(

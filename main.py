@@ -415,23 +415,23 @@ class SuperDraw(Star):
         """确认当前事件具备引用回复所需的 ID 和组件。"""
         return bool(
             self._messageId(event)
-            and hasattr(Comp, "Face")
             and hasattr(Comp, "Reply")
             and hasattr(Comp, "Plain")
         )
 
     async def _sendFace(self, umo: str, event: Any) -> bool:
-        """发送接单表情；不支持时返回 False，让调用方保留文字反馈。"""
-        if not self._richAvailable(event):
+        """给原消息添加接单反应；不支持时返回 False，让调用方保留文字反馈。"""
+        react = getattr(event, "react", None)
+        # AstrBot 基类的 react() 会退化为发送一条表情文字，不能把它当作原生反应。
+        if not callable(react) or getattr(type(event), "react", None) is AstrMessageEvent.react:
             return False
         try:
-            chain = self._componentChain([Comp.Face(id=self.data.taskFaceId)])
-            result = self.context.send_message(umo, chain)
+            result = react("👍")
             if inspect.isawaitable(result):
                 await result
             return True
         except Exception as e:
-            logger.warning(f"[SuperDraw] 发送接单表情失败，退回文字反馈：{e}")
+            logger.warning(f"[SuperDraw] 添加接单表情失败，退回文字反馈：{e}")
             return False
 
     async def _sendReplyStatus(

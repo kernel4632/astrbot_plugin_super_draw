@@ -21,6 +21,7 @@ import base64  # OpenAI 和部分 Gemini 响应会把图片放在 base64 字符�
 import re
 from typing import Any, Callable  # keyGetter 是外部传入的取 key 函数
 
+import httpx
 from openai import AsyncOpenAI  # OpenAI 官方异步客户端，兼容大多数 OpenAI-like 图像接口
 
 try:
@@ -114,7 +115,6 @@ _OA_QUALITIES = {"low", "medium", "high"}  # OpenAI 的 auto 不传参数，让�
 async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images: list[bytes], size: str, quality: str, n: int) -> list[bytes]:
     """调用 OpenAI 兼容接口；不传 size，由模型根据提示词自动决定比例。"""
 
-    client = _openAiClient(provider.get("baseUrl") or "https://api.openai.com", apiKey, int(provider.get("timeout", 180)))
     count = max(1, min(8, int(n)))
 
     request: dict[str, Any] = {
@@ -131,9 +131,9 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
         request["quality"] = quality
 
     if images:
-        request["image"] = _prepareOpenAiImages(images)
-        response = await client.images.edit(**request)
+        return await _callOpenAiJsonEdit(provider, apiKey, request, images)
     else:
+        client = _openAiClient(provider.get("baseUrl") or "https://api.openai.com", apiKey, int(provider.get("timeout", 180)))
         response = await client.images.generate(**request)
 
     result: list[bytes] = []
@@ -157,6 +157,48 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
 
     if not result:
         raise ValueError("OpenAI 响应里没有图片数据（既无 b64_json 也无 url）。")
+    return result
+
+
+async def _callOpenAiJsonEdit(
+    provider: dict[str, Any], apiKey: str, request: dict[str, Any], images: list[bytes]
+) -> list[bytes]:
+    """调用要求 application/json 的 OpenAI 兼容改图接口。"""
+
+    request["image"] = _prepareOpenAiImageDataUris(images)
+    baseUrl = (provider.get("baseUrl") or "https://api.openai.com").rstrip("/")
+    apiUrl = baseUrl if baseUrl.endswith("/v1") else f"{baseUrl}/v1"
+    timeoutSec = int(provider.get("timeout", 180))
+    try:
+        async with httpx.AsyncClient(timeout=timeoutSec) as http:
+            response = await http.post(
+                f"{apiUrl}/images/edits",
+                headers={"Authorization": f"Bearer {apiKey}"},
+                json=request,
+            )
+            response.raise_for_status()
+            payload = response.json()
+    except httpx.HTTPStatusError as error:
+        detail = error.response.text[:300].strip()
+        raise ValueError(f"OpenAI 改图请求失败：HTTP {error.response.status_code} {detail}") from error
+    except Exception as error:
+        raise ValueError(f"OpenAI 改图请求失败：{error}") from error
+
+    result: list[bytes] = []
+    for item in payload.get("data", []) if isinstance(payload, dict) else []:
+        if not isinstance(item, dict):
+            continue
+        if b64Data := item.get("b64_json") or item.get("base64"):
+            result.append(base64.b64decode(b64Data))
+        elif imageUrl := item.get("url") or item.get("image_url"):
+            cleanUrl = str(imageUrl).strip()
+            if cleanUrl.startswith("data:image") and "," in cleanUrl:
+                result.append(base64.b64decode(cleanUrl.split(",", 1)[1]))
+            else:
+                result.append(await _downloadUrl(cleanUrl, timeoutSec))
+
+    if not result:
+        raise ValueError("OpenAI 改图响应里没有图片数据（既无 b64_json 也无 url）。")
     return result
 
 
@@ -251,13 +293,14 @@ def _chatImageValues(value: Any) -> list[bytes | str]:
     return _chatImageValues(vars(value)) if hasattr(value, "__dict__") else []
 
 
-def _prepareOpenAiImages(images: list[bytes]) -> list[tuple[str, bytes, str]]:
-    """把参考图统一整理成 OpenAI edit 接口可接收的 (文件名, bytes, mime) 列表。"""
+def _prepareOpenAiImageDataUris(images: list[bytes]) -> list[str]:
+    """把参考图转为 JSON 改图接口使用的 data URI。"""
 
-    result: list[tuple[str, bytes, str]] = []
-    for index, imageBytes in enumerate(images[:16]):
+    result: list[str] = []
+    for imageBytes in images[:16]:
         cleanBytes, mime = normalize_to_supported_image(imageBytes, target_fmt="png")
-        result.append((f"ref_{index}.png", cleanBytes, mime))
+        encoded = base64.b64encode(cleanBytes).decode("ascii")
+        result.append(f"data:{mime};base64,{encoded}")
     return result
 
 
@@ -320,8 +363,6 @@ async def _callGemini(provider: dict[str, Any], apiKey: str, prompt: str, images
 
 async def _downloadUrl(url: str, timeoutSec: int) -> bytes:
     """下载图片 URL；httpx 是 openai SDK 的依赖，环境里必定存在。"""
-
-    import httpx
 
     try:
         async with httpx.AsyncClient(timeout=timeoutSec) as http:

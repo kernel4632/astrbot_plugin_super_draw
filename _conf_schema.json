@@ -24,21 +24,10 @@
     "default": false
   },
   "rich_task_feedback": {
-    "description": "使用表情和引用回复反馈生图任务",
-    "hint": "开启后接单贴 QQ 表情，完成、失败和取消时引用原始生图消息；不支持时自动退回文字",
+    "description": "使用原生表情和引用回复反馈生图任务",
+    "hint": "开启后，在支持原生表情回应的平台给原消息贴 👍；完成、失败和取消时引用原始生图消息；平台不支持时自动退回文字",
     "type": "bool",
     "default": false
-  },
-  "task_face_id": {
-    "description": "生图接单表情 ID",
-    "hint": "QQ 表情编号，默认 21",
-    "type": "int",
-    "default": 21,
-    "slider": {
-      "min": 1,
-      "max": 999,
-      "step": 1
-    }
   },
   "api_providers": {
     "description": "API 供应商配置",

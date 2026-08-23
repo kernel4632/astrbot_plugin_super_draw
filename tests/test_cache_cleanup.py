@@ -222,14 +222,16 @@ def test_safe_redacts_api_keys(tmp_path):
     assert plugin._safe(error) == "request failed with ***"
 
 
-async def test_rich_feedback_sends_face_and_reply_components(tmp_path):
+async def test_rich_feedback_reacts_and_sends_reply_components(tmp_path):
     from astrbot.api import message_components as Comp
 
     plugin = _plugin(tmp_path)
     plugin.data.richTaskFeedback = True
-    plugin.data.taskFaceId = 21
     plugin.context = SimpleNamespace(send_message=AsyncMock())
-    event = AstrMessageEvent()
+    class ReactionEvent(AstrMessageEvent):
+        react = AsyncMock()
+
+    event = ReactionEvent()
     event.message_obj = SimpleNamespace(
         message_id=123,
         raw_message={"message_id": 456},
@@ -243,9 +245,8 @@ async def test_rich_feedback_sends_face_and_reply_components(tmp_path):
         ["result.png"],
     )
 
-    faceMessage = plugin.context.send_message.await_args_list[0].args[1].chain
-    replyMessage = plugin.context.send_message.await_args_list[1].args[1].chain
-    assert isinstance(faceMessage[0], Comp.Face)
+    event.react.assert_awaited_once_with("👍")
+    replyMessage = plugin.context.send_message.await_args_list[0].args[1].chain
     assert isinstance(replyMessage[0], Comp.Reply)
     assert isinstance(replyMessage[1], Comp.Plain)
     assert isinstance(replyMessage[2], Comp.Image)
@@ -277,18 +278,12 @@ def test_message_id_falls_back_to_raw_message(tmp_path):
     assert plugin._messageId(event) == "789"
 
 
-async def test_face_component_unavailable_keeps_old_mode(tmp_path, monkeypatch):
-    from astrbot.api import message_components as Comp
-
+async def test_reaction_unavailable_keeps_old_mode(tmp_path):
     plugin = _plugin(tmp_path)
     plugin.data.richTaskFeedback = True
     plugin.context = SimpleNamespace(send_message=AsyncMock())
     event = AstrMessageEvent()
     event.message_obj = SimpleNamespace(message_id=123, raw_message={})
-    face = Comp.Face
-    monkeypatch.delattr(Comp, "Face")
-    try:
-        assert not await plugin._sendFace("qq:GroupMessage:1", event)
-        assert plugin.context.send_message.await_count == 0
-    finally:
-        Comp.Face = face
+    event.react = None
+    assert not await plugin._sendFace("qq:GroupMessage:1", event)
+    assert plugin.context.send_message.await_count == 0

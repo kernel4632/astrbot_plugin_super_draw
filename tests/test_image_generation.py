@@ -56,6 +56,47 @@ def test_openai_request_passes_auto_size_and_count(monkeypatch):
     assert "quality" not in request
 
 
+def test_openai_edit_uses_json_data_uris(monkeypatch):
+    request = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": "aW1hZ2U="}]}
+
+    class HttpClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, **kwargs):
+            request["url"] = url
+            request.update(kwargs)
+            return Response()
+
+    monkeypatch.setattr(generate.httpx, "AsyncClient", lambda **kwargs: HttpClient())
+    result = asyncio.run(
+        generate._callOpenAi(
+            {"model": "image-model", "baseUrl": "https://example.com", "timeout": 30},
+            "test-key",
+            "把图改成水彩画",
+            [b"image"],
+            "1024x1024",
+            "auto",
+            1,
+        )
+    )
+
+    assert result == [b"image"]
+    assert request["url"] == "https://example.com/v1/images/edits"
+    assert request["headers"]["Authorization"] == "Bearer test-key"
+    assert request["json"]["image"] == ["data:image/png;base64,aW1hZ2U="]
+
+
 def test_openai_chat_dispatches_and_decodes_data_uri(monkeypatch):
     response = SimpleNamespace(
         choices=[
