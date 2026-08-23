@@ -108,7 +108,7 @@ def test_data_clamps_invalid_cache_settings(tmp_path):
     assert d.cleanupIntervalHours == 1
 
 
-def test_data_migrates_legacy_models_and_selects_edit_model(tmp_path):
+def test_data_uses_one_model_for_generation_and_edit(tmp_path):
     d = dataMod.Data(
         _config(
             api_providers=[
@@ -117,18 +117,16 @@ def test_data_migrates_legacy_models_and_selects_edit_model(tmp_path):
                     "api_type": "openai",
                     "api_keys": ["key"],
                     "available_models": ["generate"],
-                    "edit_models": ["edit"],
                 }
             ]
         ),
         tmp_path,
     )
-    assert d.providers[0]["generationModel"] == "generate"
     assert d.resolveModel(False)["model"] == "generate"
-    assert d.resolveModel(True)["model"] == "edit"
+    assert d.resolveModel(True)["model"] == "generate"
 
 
-def test_data_falls_back_to_generation_model_for_edit(tmp_path):
+def test_data_accepts_legacy_generation_model_list(tmp_path):
     d = dataMod.Data(
         _config(
             api_providers=[
@@ -137,7 +135,6 @@ def test_data_falls_back_to_generation_model_for_edit(tmp_path):
                     "api_type": "openai_chat",
                     "api_keys": ["key"],
                     "generation_models": ["generate"],
-                    "edit_models": [],
                 }
             ]
         ),
@@ -222,30 +219,25 @@ def test_safe_redacts_api_keys(tmp_path):
     assert plugin._safe(error) == "request failed with ***"
 
 
-async def test_rich_feedback_reacts_and_sends_reply_components(tmp_path):
+async def test_rich_feedback_sends_reply_components(tmp_path):
     from astrbot.api import message_components as Comp
 
     plugin = _plugin(tmp_path)
     plugin.data.richTaskFeedback = True
     plugin.context = SimpleNamespace(send_message=AsyncMock())
-    class ReactionEvent(AstrMessageEvent):
-        react = AsyncMock()
-
-    event = ReactionEvent()
+    event = AstrMessageEvent()
     event.message_obj = SimpleNamespace(
         message_id=123,
         raw_message={"message_id": 456},
         message=[],
     )
     assert plugin._messageId(event) == "123"
-    assert await plugin._sendFace("qq:GroupMessage:1", event)
     await plugin._sendReplyStatus(
         {"umo": "qq:GroupMessage:1", "messageId": "123"},
         "生图完成",
         ["result.png"],
     )
 
-    event.react.assert_awaited_once_with("👍")
     replyMessage = plugin.context.send_message.await_args_list[0].args[1].chain
     assert isinstance(replyMessage[0], Comp.Reply)
     assert isinstance(replyMessage[1], Comp.Plain)
@@ -278,12 +270,9 @@ def test_message_id_falls_back_to_raw_message(tmp_path):
     assert plugin._messageId(event) == "789"
 
 
-async def test_reaction_unavailable_keeps_old_mode(tmp_path):
+async def test_rich_feedback_keeps_old_mode_without_message_id(tmp_path):
     plugin = _plugin(tmp_path)
     plugin.data.richTaskFeedback = True
     plugin.context = SimpleNamespace(send_message=AsyncMock())
-    event = AstrMessageEvent()
-    event.message_obj = SimpleNamespace(message_id=123, raw_message={})
-    event.react = None
-    assert not await plugin._sendFace("qq:GroupMessage:1", event)
-    assert plugin.context.send_message.await_count == 0
+    await plugin._sendReplyStatus({"umo": "qq:GroupMessage:1", "messageId": ""}, "失败")
+    assert plugin.context.send_message.await_count == 1

@@ -56,7 +56,7 @@ def test_openai_request_passes_auto_size_and_count(monkeypatch):
     assert "quality" not in request
 
 
-def test_openai_edit_uses_json_data_uris(monkeypatch):
+def test_openai_edit_uses_multipart_files(monkeypatch):
     request = {}
 
     class Response:
@@ -94,9 +94,10 @@ def test_openai_edit_uses_json_data_uris(monkeypatch):
     assert result == [b"image"]
     assert request["url"] == "https://example.com/v1/images/edits"
     assert request["headers"]["Authorization"] == "Bearer test-key"
-    assert request["json"]["image"] == "aW1hZ2U="
-    assert "response_format" not in request["json"]
-    assert "size" not in request["json"]
+    assert request["data"]["model"] == "image-model"
+    assert request["data"]["size"] == "1024x1024"
+    assert request["files"][0][0] == "image"
+    assert request["files"][0][1][0] == "ref_0.png"
 
 
 def test_openai_chat_dispatches_and_decodes_data_uri(monkeypatch):

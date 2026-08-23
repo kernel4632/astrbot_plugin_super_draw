@@ -86,12 +86,7 @@ class SuperDraw(Star):
         result = await self._draw(event, prompt, images)  # 通用生图函数
         if preset:
             result += f"\n预设：{preset}"
-        if not (
-            self.data.richTaskFeedback
-            and result.startswith("生图任务已开始：")
-            and await self._sendFace(event.unified_msg_origin, event)
-        ):
-            yield event.plain_result(result)
+        yield event.plain_result(result)
         event.stop_event()  # 阻止 LLM 接管
 
     @filter.command("生图取消")
@@ -196,8 +191,6 @@ class SuperDraw(Star):
                 images.append(d)
         images.extend(await self._images(real))  # 再从消息收集
         result = await self._draw(real, prompt.strip(), images, from_tool=True)
-        if result.startswith("生图任务已开始：") and self.data.richTaskFeedback:
-            await self._sendFace(real.unified_msg_origin, real)
         return result
 
     @filter.llm_tool(name="super_draw_data")
@@ -410,29 +403,6 @@ class SuperDraw(Star):
         else:
             value = getattr(raw, "message_id", None)
         return str(value) if value else ""
-
-    def _richAvailable(self, event: Any) -> bool:
-        """确认当前事件具备引用回复所需的 ID 和组件。"""
-        return bool(
-            self._messageId(event)
-            and hasattr(Comp, "Reply")
-            and hasattr(Comp, "Plain")
-        )
-
-    async def _sendFace(self, umo: str, event: Any) -> bool:
-        """给原消息添加接单反应；不支持时返回 False，让调用方保留文字反馈。"""
-        react = getattr(event, "react", None)
-        # AstrBot 基类的 react() 会退化为发送一条表情文字，不能把它当作原生反应。
-        if not callable(react) or getattr(type(event), "react", None) is AstrMessageEvent.react:
-            return False
-        try:
-            result = react("👍")
-            if inspect.isawaitable(result):
-                await result
-            return True
-        except Exception as e:
-            logger.warning(f"[SuperDraw] 添加接单表情失败，退回文字反馈：{e}")
-            return False
 
     async def _sendReplyStatus(
         self,

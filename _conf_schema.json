@@ -24,8 +24,8 @@
     "default": false
   },
   "rich_task_feedback": {
-    "description": "使用原生表情和引用回复反馈生图任务",
-    "hint": "开启后，在支持原生表情回应的平台给原消息贴 👍；完成、失败和取消时引用原始生图消息；平台不支持时自动退回文字",
+    "description": "使用引用回复反馈生图任务",
+    "hint": "开启后，任务完成、失败和取消时引用原始生图消息；不支持引用时自动退回文字",
     "type": "bool",
     "default": false
   },
@@ -72,18 +72,6 @@
             "hint": "填写该供应商支持的生图模型名称",
             "type": "list",
             "default": []
-          },
-          "generation_models": {
-            "description": "文生图模型列表",
-            "hint": "新配置使用此字段；旧 available_models 会自动作为文生图模型",
-            "type": "list",
-            "default": []
-          },
-          "edit_models": {
-            "description": "改图模型列表",
-            "hint": "有参考图时优先使用第一个模型；留空则复用文生图模型",
-            "type": "list",
-            "default": []
           }
         }
       },
@@ -127,18 +115,6 @@
             "default": [
               "gemini-3.1-flash-image-preview"
             ]
-          },
-          "generation_models": {
-            "description": "文生图模型列表",
-            "hint": "新配置使用此字段；旧 available_models 会自动作为文生图模型",
-            "type": "list",
-            "default": []
-          },
-          "edit_models": {
-            "description": "改图模型列表",
-            "hint": "有参考图时优先使用第一个模型；留空则复用文生图模型",
-            "type": "list",
-            "default": []
           }
         }
       }

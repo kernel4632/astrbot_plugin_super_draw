@@ -131,8 +131,6 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
         request["quality"] = quality
 
     if images:
-        request.pop("response_format", None)
-        request.pop("size", None)
         return await _callOpenAiJsonEdit(provider, apiKey, request, images)
     else:
         client = _openAiClient(provider.get("baseUrl") or "https://api.openai.com", apiKey, int(provider.get("timeout", 180)))
@@ -165,22 +163,22 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
 async def _callOpenAiJsonEdit(
     provider: dict[str, Any], apiKey: str, request: dict[str, Any], images: list[bytes]
 ) -> list[bytes]:
-    """调用要求 application/json 的 OpenAI 兼容改图接口。"""
+    """按 OpenAI 官方规范用 multipart/form-data 调用改图接口。"""
 
-    imageDataUris = _prepareOpenAiImageDataUris(images)
-    if not imageDataUris:
-        raise ValueError("OpenAI 改图至少需要一张参考图。")
-    # JSON 改图服务通常直接 base64 解码 image，不接受 data URI 前缀。
-    request["image"] = imageDataUris[0] if len(imageDataUris) == 1 else imageDataUris
     baseUrl = (provider.get("baseUrl") or "https://api.openai.com").rstrip("/")
     apiUrl = baseUrl if baseUrl.endswith("/v1") else f"{baseUrl}/v1"
     timeoutSec = int(provider.get("timeout", 180))
     try:
         async with httpx.AsyncClient(timeout=timeoutSec) as http:
+            files = [
+                ("image", (name, cleanBytes, mime))
+                for name, cleanBytes, mime in _prepareOpenAiImages(images)
+            ]
             response = await http.post(
                 f"{apiUrl}/images/edits",
                 headers={"Authorization": f"Bearer {apiKey}"},
-                json=request,
+                data={key: str(value) for key, value in request.items()},
+                files=files,
             )
             response.raise_for_status()
             payload = response.json()
@@ -299,14 +297,13 @@ def _chatImageValues(value: Any) -> list[bytes | str]:
     return _chatImageValues(vars(value)) if hasattr(value, "__dict__") else []
 
 
-def _prepareOpenAiImageDataUris(images: list[bytes]) -> list[str]:
-    """把参考图转为 JSON 改图接口使用的纯 base64 字符串。"""
+def _prepareOpenAiImages(images: list[bytes]) -> list[tuple[str, bytes, str]]:
+    """把参考图整理成 OpenAI edit 接口需要的文件三元组。"""
 
-    result: list[str] = []
-    for imageBytes in images[:16]:
+    result: list[tuple[str, bytes, str]] = []
+    for index, imageBytes in enumerate(images[:16]):
         cleanBytes, mime = normalize_to_supported_image(imageBytes, target_fmt="png")
-        encoded = base64.b64encode(cleanBytes).decode("ascii")
-        result.append(encoded)
+        result.append((f"ref_{index}.png", cleanBytes, mime))
     return result
 
 

@@ -102,15 +102,8 @@ class Data:
             keys = [
                 str(k).strip() for k in (item.get("api_keys") or []) if str(k).strip()
             ]  # API Key 列表
-            generationModels = item.get("generation_models")
-            if not generationModels:
-                generationModels = item.get("available_models") or []
-            editModels = item.get("edit_models") or []
-            editModel = next(
-                (str(model).strip() for model in editModels if str(model).strip()),
-                "",
-            )
-            for model in generationModels:  # 每个文生图模型展开成一条 provider
+            models = item.get("available_models") or item.get("generation_models") or []
+            for model in models:  # 每个模型展开成一条 provider
                 model = str(model).strip()
                 if model and keys:  # 没 key 或没模型名就跳过
                     self.providers.append(
@@ -120,8 +113,6 @@ class Data:
                             "baseUrl": baseUrl,
                             "apiKeys": keys,
                             "model": model,
-                            "generationModel": model,
-                            "editModel": editModel,
                             "timeout": self.timeout,
                             "maxRetry": self.maxRetry,
                         }
@@ -326,17 +317,11 @@ class Data:
         return f"已切换到：{self.modelKey}"
 
     def resolveModel(self, hasImages: bool) -> dict | None:
-        """按是否有参考图选择当前供应商的生成模型或改图模型。"""
+        """返回当前模型；文生图和改图统一使用同一个模型槽位。"""
         if not self.providers or not (0 <= self.modelIndex < len(self.providers)):
             return None
         provider = self.providers[self.modelIndex]
-        if hasImages and provider.get("editModel"):
-            selected = dict(provider)
-            selected["model"] = provider["editModel"]
-            selected["modelRole"] = "edit"
-            return selected
         selected = dict(provider)
-        selected["modelRole"] = "generation"
         return selected
 
     # ========== 黑名单 ==========
