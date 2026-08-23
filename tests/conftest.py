@@ -10,6 +10,12 @@ import types
 from pathlib import Path
 
 
+ROOT = Path(__file__).resolve().parents[1]
+PARENT = ROOT.parent
+if str(PARENT) not in sys.path:
+    sys.path.insert(0, str(PARENT))
+
+
 def _makeModule(name: str) -> types.ModuleType:
     mod = types.ModuleType(name)
     sys.modules[name] = mod

@@ -153,36 +153,14 @@
           "step": 10
         }
       },
-      "max_queue_size": {
-        "description": "最大队列长度",
-        "hint": "同时允许排队的生图任务数量，超过后拒绝新任务",
+      "max_active_jobs": {
+        "description": "最大同时生图数",
+        "hint": "同时运行的生图任务数量，超过后拒绝新任务",
         "type": "int",
-        "default": 10,
+        "default": 3,
         "slider": {
           "min": 1,
           "max": 100,
-          "step": 1
-        }
-      },
-      "max_cache_files": {
-        "description": "缓存图片保留上限",
-        "hint": "缓存目录最多保留这么多张生成的图片，超出的旧图会被定时删除",
-        "type": "int",
-        "default": 200,
-        "slider": {
-          "min": 10,
-          "max": 10000,
-          "step": 10
-        }
-      },
-      "cleanup_interval_hours": {
-        "description": "缓存清理间隔（小时）",
-        "hint": "每隔多少小时自动清理一次缓存目录中的旧图片",
-        "type": "int",
-        "default": 24,
-        "slider": {
-          "min": 1,
-          "max": 168,
           "step": 1
         }
       }
@@ -231,8 +209,8 @@
         }
       },
       "bad_request_penalty_points": {
-        "description": "400错误扣除积分",
-        "hint": "生图因内容安全等原因返回 400 时额外扣除的积分，余额最低为 0",
+        "description": "内容策略拒绝扣分",
+        "hint": "仅 API 明确返回内容安全或策略拒绝时扣除积分。普通 400、参数错误、网络错误和超时都会退款",
         "type": "int",
         "default": 50,
         "slider": {

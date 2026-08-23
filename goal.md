@@ -1,301 +1,520 @@
-# 超级生图 V5 兼容迁移目标
+# 超级生图插件重构目标
 
-## 目标
+## 总目标
 
-在不破坏当前 v4.0.0 行为的前提下，为插件增加可选的 QQ 富反馈模式：
+对插件做一次破坏性重构，让代码优先服务于“以后快速修改”，而不是继续堆积旧版兼容逻辑。
 
-- 生图指令接单后，直接对原消息发送 QQ 表情。
-- 生图完成、失败、违规或取消时，引用原始生图指令消息回复。
-- 默认保留现有文字反馈模式，由配置开关控制迁移。
-- 先以 v4.0.0 的可选功能验证，QQ 实际稳定后再考虑将其作为 v5 默认行为。
+必须遵循：
 
-## 已确认的 AstrBot API
+- KISS：能直接写清楚，就不增加抽象。
+- 奥克姆剃刀：删除没有实际用途的分支、配置和兼容层。
+- 所属关系明确：复杂名称通过对象或模块表达，方法本身只使用一个简单单词。
+- 局部可读：主流程读起来像业务步骤，不需要跳过多层辅助函数才能理解。
+- 一个事实来源：配置、README、测试和代码不能互相矛盾。
 
-官方组件源码：
+本次重构允许破坏旧配置和旧内部 API。旧用户需要按照新配置重新填写模型。
 
-`https://raw.githubusercontent.com/AstrBotDevs/AstrBot/master/astrbot/core/message/components.py`
+## 业务规则
 
-真实定义：
+保留这些实际功能：
 
-```python
-Comp.Face(id=21)
-Comp.Reply(id=source_message_id)
-```
+- `/生图`：文生图；消息中有参考图时改图。
+- `/生图取消`：取消当前用户最近的任务。
+- `/生图积分`：查询积分。
+- `/生图预设`：管理提示词预设。
+- `/生图模型`：管理员查看和切换模型。
+- `/生图开关`：管理员开关插件。
+- `/生图改分`：管理员修改积分。
+- `super_draw`：LLM 调用生图。
+- `super_draw_data`：LLM 查询或修改积分。
+- `super_draw_ban`：LLM 管理黑名单。
+- OpenAI Images、OpenAI Chat、Gemini 三种协议。
+- 任务完成、失败、取消时可引用原始消息回复。
 
-注意事项：
+删除这些功能或概念：
 
-- QQ 表情组件是 `Face`，字段是整数 `id`。
-- 引用组件是 `Reply`，字段是 `id`，不是 `message_id`。
-- `Reply.toDict()` 输出 OneBot V11 格式：`{"type": "reply", "data": {"id": "..."}}`。
-- Reply 必须和至少一个其他内容组件一起发送，不能只发送 Reply。
-- 后台任务使用 `self.context.send_message(umo, chain)`。
-- 直接响应使用 `yield event.chain_result(chain)`。
-- `Face` 主要适用于 QQ 适配器，其他平台必须允许降级。
+- QQ `Face` 接单表情。
+- 长期图片缓存。
+- 缓存命中和图片去重。
+- 定时缓存清理任务。
+- 独立的文生图模型槽位。
+- 独立的改图模型槽位。
+- 为未知中转服务猜测请求格式。
+- 为旧版本保留的多层运行时兼容分支。
 
-## 本机插件参考
-
-本机其他 AstrBot 插件没有 `Face` 或 `Reply` 的实现。
-
-`astrbot_plugin_model_connectivity` 提供了主动发送的兼容模式：
-
-1. 优先使用 `MessageChain`。
-2. 不可用时退回组件列表，例如 `[Comp.Image.fromFileSystem(path)]`。
-3. 发送结果可能是协程，也可能是普通值，需要判断是否可 await。
-
-富反馈实现必须遵循相同的兼容思路，不能假设所有适配器和 AstrBot 版本都支持同一种发送对象。
-
-## 配置开关
-
-在 `_conf_schema.json` 增加一个默认关闭的布尔开关：
-
-```json
-"rich_task_feedback": {
-  "description": "使用表情和引用回复反馈生图任务",
-  "type": "bool",
-  "default": false
-}
-```
-
-`Data` 中读取为 `richTaskFeedback` 或同等语义的字段。
-
-默认关闭时，所有现有文字反馈、任务 ID、积分、退款、取消和评价逻辑保持不变。
-
-## 消息 ID 获取
-
-增加统一辅助方法 `_messageId(event)`，按以下顺序获取：
-
-1. `event.message_obj.message_id`
-2. `event.message_obj.raw_message["message_id"]`
-3. 对象形式的 `raw_message.message_id`
-4. 获取不到时返回空字符串
-
-消息 ID 支持字符串和整数，发送 Reply 前统一转为字符串或直接交给 `Comp.Reply`。
-
-任务请求只保存必要元数据，不长期持有 command event：
-
-```python
-{
-    "umo": event.unified_msg_origin,
-    "messageId": message_id,
-    ...
-}
-```
-
-LLM 工具场景仍可按现有逻辑保存 event，用于生图后评价；引用回复只依赖 `umo` 和 `messageId`。
-
-## 兼容发送策略
-
-增加少量统一辅助方法，避免命令、成功、失败和取消路径重复拼消息：
-
-- `_sendFace(umo, face_id)`：发送接单表情。
-- `_sendReplyStatus(umo, message_id, text, paths=...)`：发送引用状态消息。
-- `_messageId(event)`：提取来源消息 ID。
-
-推荐的完成消息组件顺序：
-
-```python
-[
-    Comp.Reply(id=source_message_id),
-    Comp.Plain("生图完成"),
-    Comp.Image.fromFileSystem(path),
-]
-```
-
-失败和取消：
-
-```python
-[
-    Comp.Reply(id=source_message_id),
-    Comp.Plain("生图失败，积分已退回：..."),
-]
-```
-
-降级规则：
-
-- 开关关闭：沿用当前 `MessageChain().message(...).file_image(...)` 逻辑。
-- 开关开启但没有 message ID：发送普通主动消息，不构造 Reply。
-- `Comp.Face` 或 `Comp.Reply` 不存在：记录 warning，退回文字模式，插件不能因此加载失败。
-- 组件列表发送失败：退回当前版本的 `MessageChain` 或纯文字消息。
-- 非 QQ 平台不强行发送 QQ Face；优先走普通文字反馈。
-
-## 行为设计
-
-### 普通 `/生图` 命令
-
-- 旧模式：继续发送“生图任务已开始：任务 ID”文字。
-- 富反馈模式：任务成功创建后发送 `Face`，不再发送接单文字。
-- 参数错误、黑名单、积分不足、队列已满等未创建任务的情况仍发送文字。
-- 任务完成、失败、400 内容违规、取消均引用原始生图指令。
-
-### `super_draw` LLM 工具
-
-- 工具方法仍返回文字给 LLM，避免模型误判工具调用失败。
-- 用户侧可以额外收到接单表情和引用结果。
-- 工具事件没有有效 message ID 时自动使用普通主动消息。
-
-### 其他命令
-
-`/生图积分`、`/生图取消`、`/生图模型`、`/生图预设`、`/生图开关`、`/生图改分` 等非生图任务命令保持现有文字回复，不受富反馈开关影响。
-
-## 不应做的改动
-
-- 不重写现有任务队列。
-- 不改变积分扣除、退款、400 惩罚和取消语义。
-- 不把任务 ID 当作消息 ID。
-- 不把 `unified_msg_origin` 当作 Reply 的 `id`。
-- 不强制所有平台支持 QQ 表情。
-- 不默认开启新模式。
-- 不在未完成 QQ 实测前把 metadata 版本直接改为 v5。
-
-## 测试要求
-
-新增或更新测试覆盖：
-
-- 默认配置走旧文字模式。
-- 开启开关后，成功接单发送 `Face`。
-- 正确从 `message_obj.message_id` 获取消息 ID。
-- raw message 字典和对象形式的 message ID fallback。
-- 完成消息顺序为 `Reply -> Plain -> Image`。
-- 失败、400 内容违规和取消都引用原消息。
-- 没有 message ID 时自动降级。
-- `Comp.Face` 或 `Comp.Reply` 不存在时插件仍可加载并发送旧模式消息。
-- LLM 工具仍返回可用文本给模型。
-- 现有全部测试继续通过。
-
-## 当前版本基线
-
-- 当前插件版本：`v4.0.0`
-- 实现状态：已完成第一版兼容迁移，仍保持 v4 默认行为。
-- 当前实现测试基线：`24 passed`
-- 当前提交会在本次实现完成后更新。
-
-## 协议与模型能力扩展目标
-
-V5 不仅增加消息反馈方式，还需要扩展生图协议和模型配置方式，同时保持旧配置可用。
-
-### 支持的协议
-
-当前协议：
-
-- `openai`：OpenAI Images API / OpenAI 兼容生图接口
-- `gemini`：Gemini 官方生图接口
-
-新增协议：
-
-- `openai_chat`：OpenAI Chat Completions API，通过 Chat 接口调用支持图片生成或图片输出的模型
-
-`api_type` 的可选值应明确区分为：
+## 核心数据流
 
 ```text
-openai
-openai_chat
-gemini
+用户消息 / LLM 工具
+        │
+        ▼
+app.draw()
+        │
+        ├── images.collect()
+        ├── points.check()
+        ├── points.spend()
+        └── jobs.start()
+                │
+                ▼
+             provider.draw()
+                │
+                ├── provider.openai()
+                ├── provider.chat()
+                └── provider.gemini()
+                │
+                ▼
+             files.save()
+                │
+                ▼
+             reply.success()
+                │
+                ▼
+             files.remove()
 ```
 
-OpenAI Chat 协议需要单独的请求适配器，不能直接复用 Images API 的请求格式。返回结果至少要兼容图片 URL、base64 和 data URI；具体响应解析应集中在 `generate.py`，不要散落到 `main.py`。
+失败数据流：
 
-### 供应商模板中的模型拆分
+```text
+provider.draw()
+        │
+        ▼
+ProviderFailure
+        │
+        ├── kind = policy
+        │       └── points.penalize()
+        │
+        └── 其他错误
+                └── points.refund()
+        │
+        ▼
+reply.failure()
+```
 
-旧模板只有一个模型列表：
+## 目标模块
+
+最终结构保持简单，不建立万能基类和复杂继承树：
+
+```text
+app.py
+settings.py
+points.py
+images.py
+providers.py
+jobs.py
+files.py
+reply.py
+main.py
+```
+
+### `main.py`
+
+只保留 AstrBot 边界：
+
+- 命令装饰器。
+- LLM 工具装饰器。
+- 从事件取出最少的数据。
+- 调用 `app`。
+- 把结果交给 `reply`。
+- 启动和关闭插件。
+
+`main.py` 不负责：
+
+- 拼装 OpenAI、Gemini 请求。
+- 解析协议响应。
+- 读写积分文件。
+- 下载图片。
+- 判断 HTTP 400 是否违规。
+- 管理临时文件清理。
+
+### `app.py`
+
+负责一条完整的生图业务流程。它是业务编排层，不负责具体实现细节。
+
+推荐调用方式：
+
+```python
+await app.draw(request)
+```
+
+它只按顺序调用：
+
+```text
+images.collect()
+points.check()
+points.spend()
+jobs.start()
+provider.draw()
+files.save()
+reply.success()
+files.remove()
+```
+
+### `settings.py`
+
+只负责读取和校验配置，输出明确的数据对象。
+
+每个配置项只代表一个供应商和一个模型：
+
+```text
+Provider:
+    name
+    protocol
+    base_url
+    api_keys
+    model
+    timeout
+    retries
+```
+
+配置只保留：
 
 ```text
 available_models
 ```
 
-新模板应分为：
+不再读取或生成：
+
+```text
+generation_models
+generationModel
+editModel
+```
+
+是否有参考图，只决定调用生成接口还是编辑接口，不决定切换模型：
+
+```text
+无参考图 -> /images/generations
+有参考图 -> /images/edits
+```
+
+### `points.py`
+
+只负责积分账本和积分文件：
+
+```text
+points.check()
+points.spend()
+points.refund()
+points.penalize()
+points.give()
+points.set()
+points.rank()
+points.talk()
+```
+
+积分结算规则：
+
+```text
+成功       -> 保留预扣积分
+取消       -> 全额退款
+超时       -> 全额退款
+网络错误   -> 全额退款
+参数错误   -> 全额退款
+模型不支持 -> 全额退款
+明确违规   -> 只扣违规罚分
+```
+
+绝对不能再使用“所有 HTTP 400 都是违规”的规则。
+
+协议层必须返回结构化失败：
+
+```text
+ProviderFailure:
+    kind: policy | request | network | timeout | unavailable
+    status: int | None
+    code: str | None
+    message: str
+```
+
+只有 `kind = policy` 才能调用 `points.penalize()`。
+
+### `images.py`
+
+只负责参考图：
+
+```text
+images.collect()
+images.download()
+images.validate()
+```
+
+规则：
+
+- 从 AstrBot 标准图片组件取图片来源。
+- 需要发送给模型时统一转换为图片 bytes。
+- 限制图片数量、大小和格式。
+- 外部地址只允许明确允许的 HTTPS 地址。
+- 不把任意字符串当作本地路径读取。
+- 不允许请求 localhost、私有地址或明显的内网地址。
+- 不在这个模块处理模型请求。
+
+### `providers.py`
+
+只负责协议调用和结果转换，输出统一的 `list[bytes]`。
+
+不创建 `BaseProvider`、工厂树或多层适配器。只保留一个明确分发：
+
+```python
+provider.draw(request)
+```
+
+内部按协议调用三个简单方法：
+
+```text
+provider.openai()
+provider.chat()
+provider.gemini()
+```
+
+协议规则：
+
+```text
+openai
+    无参考图 -> Images Generate
+    有参考图 -> Images Edit，multipart/form-data
+
+openai_chat
+    -> Chat Completions
+    -> 使用该协议明确支持的图片输入和输出格式
+
+gemini
+    -> Generate Content
+    -> 使用 inline_data 读取图片
+```
+
+不要递归扫描任意响应对象，不要从任意文本中猜 URL，不要为未知服务自动切换格式。
+
+不符合标准协议的中转服务视为配置或服务错误，直接返回错误并退款。
+
+### `jobs.py`
+
+只负责任务生命周期：
+
+```text
+jobs.start()
+jobs.cancel()
+jobs.active()
+jobs.clean()
+```
+
+当前代码的 `max_queue_size` 实际是并发上限，不是真正的排队队列。重构时改成：
+
+```text
+max_active_jobs
+```
+
+不实现真正的等待队列，除非之后有明确需求。
+
+任务对象只保存必要信息：
+
+```text
+DrawRequest:
+    user_id
+    origin
+    message_id
+    prompt
+    images
+    from_tool
+
+DrawJob:
+    id
+    request
+    reserved_points
+    task
+```
+
+不长期持有完整 AstrBot event。LLM 评价需要的信息单独保存，不把框架对象塞进通用任务数据。
+
+### `files.py`
+
+只处理一次发送所需的临时文件：
+
+```text
+files.save()
+files.remove()
+```
+
+流程必须是：
+
+```text
+图片 bytes
+    -> 临时文件
+    -> 发送
+    -> 删除
+```
+
+删除：
+
+- 固定 `cache` 目录。
+- `max_cache_files`。
+- `cleanup_interval_hours`。
+- `_cacheLoop()`。
+- 图片 MD5 去重命名。
+- 定时清理任务。
+
+如果 AstrBot 的发送方法异步返回且能确认上传已完成，发送完成后立即删除。若发送方法只入队，则使用单次短延迟删除，不建立长期缓存系统。
+
+### `reply.py`
+
+只负责把业务结果发送给聊天平台：
+
+```text
+reply.start()
+reply.success()
+reply.failure()
+reply.cancel()
+```
+
+完成、失败和取消都可以引用原消息：
+
+```text
+Reply(source_message_id)
+Plain(status_text)
+Image(path)
+```
+
+不再发送 `Face`。
+
+引用不可用时退回普通文字或图片消息。这个降级只放在 `reply.py`，不散落到任务和协议代码中。
+
+## 配置重构
+
+新的供应商配置只保留一个模型列表：
+
+```json
+{
+  "name": "OpenAI",
+  "api_type": "openai",
+  "base_url": "https://api.openai.com",
+  "api_keys": ["..."],
+  "available_models": ["gpt-image-1"]
+}
+```
+
+删除：
 
 ```text
 generation_models
 edit_models
+task_face_id
+max_cache_files
+cleanup_interval_hours
 ```
 
-含义：
+配置迁移采用破坏性方式：
 
-- `generation_models`：文生图模型
-- `edit_models`：图生图、改图模型
+- 不在运行时读取旧字段。
+- 不自动把旧字段转换成新字段。
+- README 明确说明升级后需要重新填写配置。
+- schema、代码、测试和文档只描述新配置。
 
-模型列表不能再把生图能力和改图能力混成一个含义不明确的列表。
+## 删除的旧复杂度
 
-### 模型选择规则
+重构时必须搜索并删除以下内容：
 
-最终模型由 `Data` 统一解析，建议提供类似：
+- `_callOpenAiJsonEdit` 这种与实际协议不符的命名。
+- 所有 JSON 改图尝试。
+- `Face`、`task_face_id` 和接单表情逻辑。
+- `generation_models`、`edit_models` 和对应 model role。
+- `_is400()` 对所有 400 的宽泛判断。
+- 递归猜测协议响应图片的通用解析器。
+- 多层 `ContextWrapper` 猜测。
+- MessageChain 多版本探测回退，除非当前支持版本确实需要。
+- OneBot 多种参数名反复尝试，除非官方接口明确要求。
+- 未使用依赖。
+- 过期 README、测试、版本目标和注释。
 
-```python
-provider, model = self.data.resolveModel(has_images)
-```
+## 命名规则
 
-选择规则：
+优先使用所属对象表达含义：
 
 ```text
-没有参考图
-    -> 使用 generation_model
-
-有参考图
-    -> edit_models 已配置：使用 edit_model
-    -> edit_models 为空：使用 generation_model
+settings.read()
+images.collect()
+images.download()
+points.refund()
+provider.openai()
+jobs.cancel()
+files.remove()
+reply.failure()
 ```
 
-改图模型为空不代表禁用改图，而是表示：
-
-> 默认认为生图模型同时具备改图能力。
-
-如果某个协议或模型实际不支持改图，应沿用现有失败、退款和错误反馈流程，不在配置层静默切换到其他协议或其他供应商。
-
-### 旧配置迁移
-
-旧配置必须继续工作：
+避免：
 
 ```text
-available_models -> generation_models
-edit_models      -> 空
+_prepareOpenAiImageDataUris()
+_collectImagesRecursive()
+_sendReplyStatus()
+_callOpenAiJsonEdit()
 ```
 
-升级后旧用户应得到以下行为：
+一个单词不足以表达含义时，优先增加所属对象，不要把多个含义拼进方法名。
 
-- 文生图继续使用原来的模型。
-- 改图默认复用原来的模型。
-- 不要求用户重新填写模型配置。
-- 旧字段只作为兼容读取来源，新模板使用新字段。
+不要为了满足命名规则创建空壳对象。封装必须有真实职责，且至少满足以下一个条件：
 
-### 内部职责边界
+- 拥有自己的状态。
+- 被多个流程使用。
+- 可以独立测试。
+- 可以被单独替换。
+- 能明显缩短主流程。
 
-- `data.py`：解析配置、保存模型列表、根据是否有参考图选择最终 provider 和 model。
-- `generate.py`：实现 `openai`、`gemini`、`openai_chat` 三种协议适配器，并统一输出 `list[bytes]`。
-- `main.py`：只负责判断是否有参考图、传递请求和处理任务结果，不判断具体协议请求格式。
+## 重构步骤
 
-建议让 `generate.py` 接收已经解析好的 provider 和 model，避免三种协议适配器各自重复判断“默认模型/改图模型”。
+1. 修改 `goal.md` 后冻结新业务规则，不再继续增加旧兼容要求。
+2. 先补积分结算测试，确保普通 400 全额退款，只有明确 policy 才扣罚。
+3. 新建 `ProviderFailure` 和统一 provider 返回结果。
+4. 拆出 `settings.py`，删除独立模型槽位和旧配置读取。
+5. 拆出 `points.py`，让积分结算脱离 `main.py`。
+6. 拆出 `images.py`，集中图片提取、校验和下载。
+7. 拆出 `providers.py`，用三个明确协议函数替代混杂分支。
+8. 拆出 `jobs.py`，把任务生命周期从 AstrBot 入口移走。
+9. 删除长期缓存，改为一次发送对应一次临时文件。
+10. 拆出 `reply.py`，集中引用回复和普通消息降级。
+11. 将 `main.py` 收缩为命令、工具和业务编排入口。
+12. 同步 README、schema、测试和版本说明。
+13. 运行语法检查、配置 JSON 检查、单元测试和三种协议的手工冒烟测试。
 
-### 协议适配要求
+## 验收标准
 
-- `openai`：无参考图走生成接口，有参考图走编辑接口。
-- `gemini`：保留当前 Gemini 请求方式，并按是否有参考图传递输入图片。
-- `openai_chat`：使用 Chat Completions 请求格式，单独处理消息内容、图片输入和图片输出。
-- 三种协议最终都转换为图片 bytes 返回给 `main.py`。
-- 现有重试、Key 轮换、积分扣除、退款和 400 处理逻辑保持不变。
+架构：
 
-### 配置字段建议
+- `main.py` 不再包含协议请求、积分账本、图片下载和文件清理。
+- 每个模块有一个清晰职责。
+- 主流程能按业务顺序阅读。
+- 方法名主要是单个简单单词，所属关系由对象或模块表达。
+- 没有为旧版本保留的无效分支。
+- 没有长期缓存系统。
 
-新供应商模板主要字段：
+业务：
+
+- 无参考图使用 Images Generate。
+- 有参考图使用标准 Images Edit multipart 请求。
+- 三种协议都能返回图片 bytes。
+- 成功保留积分。
+- 取消、超时、网络错误、参数错误、模型不支持时全额退款。
+- 只有明确内容安全拦截才扣违规罚分。
+- 完成、失败、取消可以引用原消息。
+- 引用失败时只在 `reply.py` 中降级。
+
+测试：
+
+- 普通 400 不扣罚分。
+- policy 错误才扣罚分。
+- 取消任务会退款。
+- 并发上限有效。
+- OpenAI 文生图请求正确。
+- OpenAI 改图请求使用 multipart 文件。
+- OpenAI Chat 图片输入输出正确。
+- Gemini 图片输入输出正确。
+- 图片临时文件发送后被删除。
+- 非法外部地址被拒绝。
+- 配置 schema 是有效 JSON。
+
+## 当前状态
 
 ```text
-name
-api_type
-base_url
-api_keys
-edit_models
+状态：待开始大幅重构
+基线：当前提交 874871e
+策略：允许破坏性配置变更
+重点：快速修改、低耦合、少分支、清晰所属关系
 ```
-
-字段名称可以在实现阶段根据 AstrBot WebUI 模板规范微调，但语义必须保持“协议、生成模型、改图模型”三者分离。
-
-### 扩展测试要求
-
-除富反馈测试外，还需要覆盖：
-
-- `openai`、`gemini`、`openai_chat` 三种协议都能被识别。
-- 旧 `available_models` 配置自动迁移为生成模型列表。
-- 改图模型为空时回退到生成模型。
-- 改图模型存在时，有参考图使用改图模型。
-- 无参考图始终使用生成模型。
-- 三种协议的返回 URL、base64、data URI 都能统一为图片 bytes。
-- 协议或模型改图失败时沿用现有退款/错误处理。
-- 多供应商、多 Key 轮换和现有 17 个测试继续通过。

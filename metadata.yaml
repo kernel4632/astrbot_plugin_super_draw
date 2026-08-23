@@ -1,9 +1,9 @@
 # yaml-language-server: $schema=https://json-schema.org/draft-07/schema#
 name: astrbot_plugin_super_draw
 display_name: 超级生图
-short_desc: 群聊生图插件，支持 OpenAI/Gemini 接口、积分制、LLM 工具调用、黑名单
-desc: 超级生图 4.0.0，支持 OpenAI 兼容接口和 Gemini 官方接口，文生图、图生图、预设提示词、LLM 自动调用、积分制、黑名单、生图后评价、多 Key 轮换。
-version: v4.0.0
+short_desc: 群聊生图插件，支持 OpenAI Images、OpenAI Chat、Gemini、积分制和 LLM 工具调用
+desc: 超级生图 5.0.0，统一模型列表配置，支持文生图和带参考图生图、预设提示词、LLM 自动调用、积分制、黑名单、生图后评价和多 Key 轮换。普通请求失败自动退款，仅内容策略拒绝扣分。
+version: v5.0.0
 author: Kernyr
 repo: https://github.com/kernel4632/astrbot_plugin_super_draw
 astrbot_version: ">=4.20.1"

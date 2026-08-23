@@ -1,0 +1,90 @@
+import asyncio
+import base64
+import importlib.util
+import sys
+import types
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
+import httpx
+import pytest
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PACKAGE = "astrbot_plugin_super_draw"
+
+
+def _load():
+    package = types.ModuleType(PACKAGE)
+    package.__path__ = [str(ROOT)]
+    sys.modules.setdefault(PACKAGE, package)
+    spec = importlib.util.spec_from_file_location(f"{PACKAGE}.providers", ROOT / "providers.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+providers = _load()
+
+
+def test_openai_generate_decodes_b64(monkeypatch):
+    client = SimpleNamespace(images=SimpleNamespace(generate=AsyncMock(return_value=SimpleNamespace(data=[SimpleNamespace(b64_json=base64.b64encode(b"image").decode())]))))
+    monkeypatch.setattr(providers, "AsyncOpenAI", lambda **kwargs: client)
+    result = asyncio.run(providers.provider.draw({"model": "image", "apiKey": "key"}, "cat", []))
+    assert result == [b"image"]
+    assert client.images.generate.call_args.kwargs["n"] == 1
+
+
+def test_openai_edit_uses_official_multipart(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(providers, "normalize_to_supported_image", lambda data, target_fmt: (data, "image/png"))
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(b"edited").decode()}]}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, **kwargs):
+            seen.update(url=url, **kwargs)
+            return Response()
+
+    monkeypatch.setattr(providers.httpx, "AsyncClient", lambda **kwargs: Client())
+    result = asyncio.run(providers.provider.draw({"model": "image", "apiKey": "key", "baseUrl": "https://x.test"}, "edit", [b"raw"]))
+    assert result == [b"edited"]
+    assert seen["url"] == "https://x.test/v1/images/edits"
+    assert seen["files"][0][0] == "image"
+
+
+def test_openai_400_is_request_and_not_retried(monkeypatch):
+    class Response:
+        status_code = 400
+        text = "bad request"
+
+    error = httpx.HTTPStatusError("bad request", request=httpx.Request("POST", "https://x"), response=Response())
+    client = SimpleNamespace(images=SimpleNamespace(generate=AsyncMock(side_effect=error)))
+    monkeypatch.setattr(providers, "AsyncOpenAI", lambda **kwargs: client)
+    with pytest.raises(providers.ProviderFailure) as caught:
+        asyncio.run(providers.provider.draw({"model": "image", "apiKey": "key", "maxRetry": 3}, "cat", []))
+    assert caught.value.kind == "request"
+    assert client.images.generate.await_count == 1
+
+
+def test_policy_error_is_policy_and_not_retried(monkeypatch):
+    error = RuntimeError("content_policy_violation")
+    client = SimpleNamespace(images=SimpleNamespace(generate=AsyncMock(side_effect=error)))
+    monkeypatch.setattr(providers, "AsyncOpenAI", lambda **kwargs: client)
+    with pytest.raises(providers.ProviderFailure) as caught:
+        asyncio.run(providers.provider.draw({"model": "image", "apiKey": "key", "maxRetry": 3}, "cat", []))
+    assert caught.value.kind == "policy"
+    assert client.images.generate.await_count == 1

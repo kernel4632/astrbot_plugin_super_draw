@@ -1,71 +1,47 @@
-# AstrBot 超级生图插件 4.0.0
+# AstrBot 超级生图插件 5.0.0
 
-群聊生图插件。用户发 `/生图`，插件自动判断文生图还是图生图，并可从消息、回复及合并聊天记录中提取参考图。Bot 也能通过 LLM 工具自动生图。
+群聊生图插件。发送 `/生图 一只猫坐在窗边看雨` 即可开始。消息、回复和合并聊天记录中的图片会作为参考图。Bot 也能调用 `super_draw` 工具生图。
 
-支持 OpenAI Images、OpenAI Chat Completions 和 Gemini 三种协议。新配置可以分别填写文生图模型和改图模型；改图模型留空时自动复用文生图模型。旧版 `available_models` 配置会自动作为文生图模型继续使用。
+支持 OpenAI Images、OpenAI Chat Completions 和 Gemini 三种协议。每个供应商只配置一个 `available_models` 列表，文生图和带参考图生图都使用当前选择的模型。
 
 ## 快速开始
 
-1. 放进 AstrBot 插件目录，安装 `requirements.txt`
-2. 在 WebUI 填写至少一个 API 供应商的 Key 和模型
-3. 重启 AstrBot，群里发 `/生图 一只猫` 验证
+1. 放进 AstrBot 插件目录并安装 `requirements.txt`
+2. 在 WebUI 的 `api_providers` 填写 Key 和 `available_models`
+3. 重启 AstrBot，发送 `/生图 一只猫` 验证
 
 ## 命令
 
-| 命令                   | 说明                 | 示例                                 |
-| ---------------------- | -------------------- | ------------------------------------ |
-| `/生图 描述`           | 生成图片             | `/生图 一只猫坐在窗边看雨`           |
-| `/生图取消`            | 取消自己最近一个任务 | `/生图取消`                          |
-| `/生图积分`            | 查看积分             | `/生图积分`                          |
-| `/生图预设`            | 查看/添加/删除预设   | `/生图预设 添加 手办化:变成手办风格` |
-| `/生图模型`            | 查看或切换模型       | `/生图模型 2`                        |
-| `/生图开关`            | 切换总开关           | `/生图开关`                          |
-| `/生图改分 @用户 数量` | 管理员加分           | `/生图改分 @张三 50`                 |
+| 命令 | 说明 |
+| --- | --- |
+| `/生图 描述` | 生成图片，带图片时自动作为参考图 |
+| `/生图取消` | 取消自己最近的任务 |
+| `/生图积分` | 查看积分 |
+| `/生图预设` | 查看、添加、删除预设 |
+| `/生图模型` | 管理员查看或切换模型 |
+| `/生图开关` | 管理员切换总开关 |
+| `/生图改分 @用户 数量` | 管理员加减积分 |
 
-所有命令处理后调用 `event.stop_event()`，不会再交给 LLM。
+`rich_task_feedback` 开启后，任务完成、失败和取消会引用原始消息。平台不支持引用时自动发送普通消息。
 
-`rich_task_feedback` 默认关闭。开启后，任务完成、失败和取消时引用原始生图消息；不支持引用时自动回退为文字消息。
+## 积分和失败
 
-## LLM 工具
+开始任务时会预扣积分。API 普通 400、参数错误、网络错误、超时和取消都会自动退款。只有 API 明确返回内容安全或策略拒绝时，才按 `bad_request_penalty_points` 扣分。
 
-| 工具              | 作用                                                                                    |
-| ----------------- | --------------------------------------------------------------------------------------- |
-| `super_draw`      | Bot 生图（prompt 必填，urls 可选）                                                      |
-| `super_draw_data` | Bot 查改积分（action: summary/my\_points/user\_points/change\_points/set\_points/rank） |
-| `super_draw_ban`  | Bot 管黑名单（action: list/add/remove）                                                 |
+生成图片只写入系统临时目录。发送结束后立即删除，不保存长期图片缓存。
 
-工具生图成功后可自动追加评价（WebUI 可配置）。
-
-## 架构
+## 模块
 
 ```
-用户 /生图 猫  ──→  main.py cmd_draw()  ──→  _draw()  ──→  _run()  ──→  generate.py  ──→  发图
-Bot 调 super_draw  ──→  main.py tool_draw()  ──→  _draw()  ──→  _run()  ──→  generate.py  ──→  发图 + 评价
+main.py      AstrBot 命令、工具和事件转换
+app.py       生图流程、积分结算、任务和评价
+settings.py  WebUI 配置与当前模型
+points.py    积分 JSON 数据
+images.py    参考图提取和下载
+providers.py OpenAI Images、OpenAI Chat、Gemini 请求
+jobs.py      同时运行任务限制
+files.py     一次性临时图片
+reply.py     引用回复与普通消息回退
 ```
 
-**命令和工具共享同一个** **`_draw()`** **函数**，不存在两套生图逻辑。
-
-### 文件职责
-
-```
-main.py       入口。命令 + 工具 + 生图任务 + 发送。~220 行。
-              关键：_draw() 通用生图、_run() 后台执行、_images() 收集参考图。
-
-data.py       数据。配置 + 积分 + 预设 + 黑名单 + 模型。~230 行。
-              关键：check/spend/refund/give 积分四件套，preset/model/ban 各一个入口方法。
-
-generate.py   API 调用。给提示词和图片，返回 bytes。不认识 AstrBot。
-              适配 OpenAI Images、OpenAI Chat、Gemini，兼容 b64_json、HTTP URL、data URI。
-
-tool/file.py      保存图片到临时文件。
-tool/picture.py   检测图片格式，动态图转静态。
-```
-
-### 数据流
-
-```
-WebUI 配置  →  data.py 读取  →  各字段
-用户消息    →  main.py 命令/工具  →  data.py 检查积分  →  generate.py 调 API  →  图片 bytes  →  发送
-```
-
-积分按用户 QQ 号全局存储（不区分群），文件在 `{dataDir}/points.json`。
+积分按用户 ID 全局保存，文件在 AstrBot 插件数据目录的 `points.json`。
