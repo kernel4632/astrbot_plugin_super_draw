@@ -24,6 +24,7 @@ from __future__ import annotations
 import asyncio  # 后台任务
 import base64  # data URI 解码
 import hashlib  # 生成任务 ID
+import inspect
 import re  # 提取图片 URL、脱敏 Key
 import time  # 任务计时
 from pathlib import Path
@@ -85,7 +86,12 @@ class SuperDraw(Star):
         result = await self._draw(event, prompt, images)  # 通用生图函数
         if preset:
             result += f"\n预设：{preset}"
-        yield event.plain_result(result)
+        if not (
+            self.data.richTaskFeedback
+            and result.startswith("生图任务已开始：")
+            and await self._sendFace(event.unified_msg_origin, event)
+        ):
+            yield event.plain_result(result)
         event.stop_event()  # 阻止 LLM 接管
 
     @filter.command("生图取消")
@@ -189,7 +195,10 @@ class SuperDraw(Star):
             if d := await self._dl(url):
                 images.append(d)
         images.extend(await self._images(real))  # 再从消息收集
-        return await self._draw(real, prompt.strip(), images, from_tool=True)
+        result = await self._draw(real, prompt.strip(), images, from_tool=True)
+        if result.startswith("生图任务已开始：") and self.data.richTaskFeedback:
+            await self._sendFace(real.unified_msg_origin, real)
+        return result
 
     @filter.llm_tool(name="super_draw_data")
     async def tool_data(
@@ -276,6 +285,7 @@ class SuperDraw(Star):
         req = {
             "uid": uid,
             "umo": event.unified_msg_origin,
+            "messageId": self._messageId(event),
             "prompt": prompt,
             "images": images[:8],
             "cost": cost,
@@ -285,7 +295,9 @@ class SuperDraw(Star):
         self._clean()  # 清理已完成的旧任务
         self.taskMeta[tid] = {"uid": uid, "prompt": prompt[:40], "start": time.time()}
         self.tasks[tid] = asyncio.create_task(self._run(tid, req))
-        info = f"生图任务已开始：{tid}\n模型：{self.data.modelKey}"
+        selected = self.data.resolveModel(bool(req["images"]))
+        modelName = selected.get("model", self.data.modelKey) if selected else self.data.modelKey
+        info = f"生图任务已开始：{tid}\n模型：{modelName}"
         if req["images"]:
             info += f"\n参考图：{len(req['images'])}张"  # 有参考图时告诉用户收集了几张
         return info
@@ -293,9 +305,12 @@ class SuperDraw(Star):
     async def _run(self, tid: str, req: dict) -> None:
         """后台执行生图。成功发图，失败退积分。"""
         try:
+            provider = self.data.resolveModel(bool(req["images"]))
+            if provider is None:
+                raise ValueError("没有可用的生图模型。")
             result = await makeImages(
-                self.data.providers,
-                self.data.modelIndex,
+                [provider],
+                0,
                 req["prompt"],
                 req["images"],
                 "auto",
@@ -305,39 +320,40 @@ class SuperDraw(Star):
             )
             paths = []  # 保存并发送图片
             chain = MessageChain().message(
-                f"生图完成：{tid}\n模型：{self.data.modelKey}"
+                f"生图完成：{tid}\n模型：{provider.get('model', self.data.modelKey)}"
             )
             for img in result:
                 p = saveImage(self.cacheDir, img, "png")
                 if p:
                     paths.append(p)
                     chain.file_image(p)
-            await self.context.send_message(req["umo"], chain)
+            await self._sendReplyStatus(
+                req,
+                f"生图完成：{tid}\n模型：{self.data.modelKey}",
+                paths,
+                fallback=chain,
+            )
             if req.get("from_tool") and self.data.enableComment:  # 工具生图后评价
                 await self._comment(req, paths)
         except asyncio.CancelledError:  # 用户取消
             self.data.refund(req["uid"], req["cost"])
-            await self.context.send_message(
-                req["umo"],
-                MessageChain().message(f"生图任务 {tid} 已取消，积分退给你了"),
+            await self._sendReplyStatus(
+                req,
+                f"生图任务 {tid} 已取消，积分退给你了",
             )
         except Exception as e:  # 生图失败
             logger.error(f"[SuperDraw] {tid} 失败: {e}")
             if self._is400(e):  # 400 内容安全错误 → 扣惩罚分
                 penalty = self.data.settle400(req["uid"], req["cost"])
-                await self.context.send_message(
-                    req["umo"],
-                    MessageChain().message(
-                        f"生图失败（{tid}）：图违规了，扣 {penalty} 分\n{self._safe(e)}"
-                    ),
+                await self._sendReplyStatus(
+                    req,
+                    f"生图失败（{tid}）：图违规了，扣 {penalty} 分\n{self._safe(e)}",
                 )
             else:  # 其他错误 → 全额退回
                 self.data.refund(req["uid"], req["cost"])
-                await self.context.send_message(
-                    req["umo"],
-                    MessageChain().message(
-                        f"生图失败（{tid}），积分退给你了：{self._safe(e)}"
-                    ),
+                await self._sendReplyStatus(
+                    req,
+                    f"生图失败（{tid}），积分退给你了：{self._safe(e)}",
                 )
         finally:
             self.taskMeta.pop(tid, None)
@@ -381,6 +397,72 @@ class SuperDraw(Star):
             logger.warning(f"[SuperDraw] 评价失败: {e}")
 
     # ==================== 图片收集 ====================
+
+    def _messageId(self, event: Any) -> str:
+        """按 AstrBot 事件结构提取原始消息 ID，取不到时返回空字符串。"""
+        msg = getattr(event, "message_obj", None)
+        value = getattr(msg, "message_id", None) if msg else None
+        if value:
+            return str(value)
+        raw = getattr(msg, "raw_message", None) if msg else None
+        if isinstance(raw, dict):
+            value = raw.get("message_id")
+        else:
+            value = getattr(raw, "message_id", None)
+        return str(value) if value else ""
+
+    def _richAvailable(self, event: Any) -> bool:
+        """确认当前事件具备引用回复所需的 ID 和组件。"""
+        return bool(
+            self._messageId(event)
+            and hasattr(Comp, "Face")
+            and hasattr(Comp, "Reply")
+            and hasattr(Comp, "Plain")
+        )
+
+    async def _sendFace(self, umo: str, event: Any) -> bool:
+        """发送接单表情；不支持时返回 False，让调用方保留文字反馈。"""
+        if not self._richAvailable(event):
+            return False
+        try:
+            result = self.context.send_message(umo, [Comp.Face(id=self.data.taskFaceId)])
+            if inspect.isawaitable(result):
+                await result
+            return True
+        except Exception as e:
+            logger.warning(f"[SuperDraw] 发送接单表情失败，退回文字反馈：{e}")
+            return False
+
+    async def _sendReplyStatus(
+        self,
+        req: dict,
+        text: str,
+        paths: list[str] | None = None,
+        fallback: Any = None,
+    ) -> None:
+        """发送任务状态；富反馈失败时回退到旧版 MessageChain。"""
+        paths = paths or []
+        if self.data.richTaskFeedback and req.get("messageId"):
+            try:
+                components = [
+                    Comp.Reply(id=str(req["messageId"])),
+                    Comp.Plain(text),
+                ]
+                components.extend(Comp.Image.fromFileSystem(path) for path in paths)
+                result = self.context.send_message(req["umo"], components)
+                if inspect.isawaitable(result):
+                    await result
+                return
+            except Exception as e:
+                logger.warning(f"[SuperDraw] 发送引用状态失败，退回普通消息：{e}")
+
+        if fallback is None:
+            fallback = MessageChain().message(text)
+            for path in paths:
+                fallback.file_image(path)
+        result = self.context.send_message(req["umo"], fallback)
+        if inspect.isawaitable(result):
+            await result
 
     async def _images(self, event: AstrMessageEvent) -> list[bytes]:
         """从消息、回复、合并转发、@头像和文本 URL 中收集参考图。"""

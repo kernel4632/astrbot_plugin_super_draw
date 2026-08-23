@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio  # 重试失败后短暂等待，避免立刻再次撞限流
 import base64  # OpenAI 和部分 Gemini 响应会把图片放在 base64 字符串里
+import re
 from typing import Any, Callable  # keyGetter 是外部传入的取 key 函数
 
 from openai import AsyncOpenAI  # OpenAI 官方异步客户端，兼容大多数 OpenAI-like 图像接口
@@ -70,6 +71,10 @@ async def makeImages(
             apiKey = keyGetter(provider) if keyGetter else _firstKey(provider)
             if provider.get("apiType") == "gemini":
                 return await _callGemini(provider, apiKey, prompt, images, size, quality, n)
+            if provider.get("apiType") == "openai_chat":
+                return await _callOpenAiChat(
+                    provider, apiKey, prompt, images, size, quality, n
+                )
             return await _callOpenAi(provider, apiKey, prompt, images, size, quality, n)
         except Exception as error:
             lastError = error
@@ -153,6 +158,97 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
     if not result:
         raise ValueError("OpenAI 响应里没有图片数据（既无 b64_json 也无 url）。")
     return result
+
+
+async def _callOpenAiChat(
+    provider: dict[str, Any],
+    apiKey: str,
+    prompt: str,
+    images: list[bytes],
+    size: str,
+    quality: str,
+    n: int,
+) -> list[bytes]:
+    """通过 OpenAI Chat Completions 调用支持图片输出的模型。"""
+    client = _openAiClient(
+        provider.get("baseUrl") or "https://api.openai.com",
+        apiKey,
+        int(provider.get("timeout", 180)),
+    )
+    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    for imageBytes in images[:16]:
+        cleanBytes, mime = normalize_to_supported_image(imageBytes, target_fmt="png")
+        encoded = base64.b64encode(cleanBytes).decode("ascii")
+        content.append(
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{encoded}"},
+            }
+        )
+
+    request: dict[str, Any] = {
+        "model": provider["model"],
+        "messages": [{"role": "user", "content": content}],
+    }
+    if n > 1:
+        request["n"] = max(1, min(8, int(n)))
+    if size and size != "auto":
+        request["size"] = size
+    if quality in _OA_QUALITIES:
+        request["quality"] = quality
+
+    response = await client.chat.completions.create(**request)
+    result: list[bytes] = []
+    urls: list[str] = []
+    for choice in getattr(response, "choices", None) or []:
+        values = _chatImageValues(getattr(choice, "message", None))
+        for value in values:
+            if isinstance(value, bytes):
+                result.append(value)
+            else:
+                urls.append(value)
+    for url in urls:
+        result.append(await _downloadUrl(url, int(provider.get("timeout", 180))))
+    if not result:
+        raise ValueError("OpenAI Chat 响应里没有图片数据。")
+    return result
+
+
+def _chatImageValues(value: Any) -> list[bytes | str]:
+    """从 Chat 响应的字符串、列表或字典中提取图片 bytes/URL。"""
+    if value is None:
+        return []
+    if isinstance(value, bytes):
+        return [value]
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith("data:image") and "," in text:
+            try:
+                return [base64.b64decode(text.split(",", 1)[1])]
+            except Exception:
+                return []
+        if text.startswith(("http://", "https://")):
+            return [text]
+        urls = re.findall(r"https?://[^\s)\]]+", text)
+        return urls
+    if isinstance(value, list):
+        result: list[bytes | str] = []
+        for item in value:
+            result.extend(_chatImageValues(item))
+        return result
+    if isinstance(value, dict):
+        result: list[bytes | str] = []
+        b64 = value.get("b64_json") or value.get("base64")
+        if isinstance(b64, str):
+            try:
+                result.append(base64.b64decode(b64))
+            except Exception:
+                pass
+        for key in ("url", "image_url", "image", "data", "content"):
+            if key in value:
+                result.extend(_chatImageValues(value[key]))
+        return result
+    return _chatImageValues(vars(value)) if hasattr(value, "__dict__") else []
 
 
 def _prepareOpenAiImages(images: list[bytes]) -> list[tuple[str, bytes, str]]:

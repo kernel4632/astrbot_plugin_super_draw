@@ -2,6 +2,8 @@
 
 群聊生图插件。用户发 `/生图`，插件自动判断文生图还是图生图，并可从消息、回复及合并聊天记录中提取参考图。Bot 也能通过 LLM 工具自动生图。
 
+支持 OpenAI Images、OpenAI Chat Completions 和 Gemini 三种协议。新配置可以分别填写文生图模型和改图模型；改图模型留空时自动复用文生图模型。旧版 `available_models` 配置会自动作为文生图模型继续使用。
+
 ## 快速开始
 
 1. 放进 AstrBot 插件目录，安装 `requirements.txt`
@@ -21,6 +23,8 @@
 | `/生图改分 @用户 数量` | 管理员加分           | `/生图改分 @张三 50`                 |
 
 所有命令处理后调用 `event.stop_event()`，不会再交给 LLM。
+
+`rich_task_feedback` 默认关闭。开启后，任务接单发送 QQ 表情，任务完成、失败和取消时引用原始生图消息；不支持引用或没有消息 ID 时自动回退为文字消息。
 
 ## LLM 工具
 
@@ -50,8 +54,8 @@ main.py       入口。命令 + 工具 + 生图任务 + 发送。~220 行。
 data.py       数据。配置 + 积分 + 预设 + 黑名单 + 模型。~230 行。
               关键：check/spend/refund/give 积分四件套，preset/model/ban 各一个入口方法。
 
-generate.py   API 调用。给提示词和图片，返回 bytes。不认识 AstrBot。~320 行。
-              兼容 b64_json、HTTP URL、data URI 三种图片返回格式。
+generate.py   API 调用。给提示词和图片，返回 bytes。不认识 AstrBot。
+              适配 OpenAI Images、OpenAI Chat、Gemini，兼容 b64_json、HTTP URL、data URI。
 
 tool/file.py      保存图片到临时文件。
 tool/picture.py   检测图片格式，动态图转静态。

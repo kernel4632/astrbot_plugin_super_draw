@@ -54,3 +54,39 @@ def test_openai_request_passes_auto_size_and_count(monkeypatch):
     assert request["size"] == "auto"  # 新版显式把 auto 传给服务端
     assert request["n"] == 1
     assert "quality" not in request
+
+
+def test_openai_chat_dispatches_and_decodes_data_uri(monkeypatch):
+    response = SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(
+                    content="data:image/png;base64,aW1hZ2U="
+                )
+            )
+        ]
+    )
+    chat = SimpleNamespace(completions=SimpleNamespace(create=AsyncMock(return_value=response)))
+    client = SimpleNamespace(chat=chat)
+    monkeypatch.setattr(generate, "_openAiClient", lambda *args: client)
+
+    result = asyncio.run(
+        generate.makeImages(
+            [
+                {
+                    "apiType": "openai_chat",
+                    "apiKeys": ["test-key"],
+                    "model": "chat-image",
+                    "baseUrl": "https://example.com",
+                    "maxRetry": 1,
+                }
+            ],
+            0,
+            "画一只猫",
+            [],
+        )
+    )
+    assert result == [b"image"]
+    request = chat.completions.create.call_args.kwargs
+    assert request["model"] == "chat-image"
+    assert request["messages"][0]["content"][0]["text"] == "画一只猫"

@@ -23,6 +23,23 @@
     "type": "bool",
     "default": false
   },
+  "rich_task_feedback": {
+    "description": "使用表情和引用回复反馈生图任务",
+    "hint": "开启后接单贴 QQ 表情，完成、失败和取消时引用原始生图消息；不支持时自动退回文字",
+    "type": "bool",
+    "default": false
+  },
+  "task_face_id": {
+    "description": "生图接单表情 ID",
+    "hint": "QQ 表情编号，默认 21",
+    "type": "int",
+    "default": 21,
+    "slider": {
+      "min": 1,
+      "max": 999,
+      "step": 1
+    }
+  },
   "api_providers": {
     "description": "API 供应商配置",
     "hint": "支持 OpenAI 兼容接口和 Gemini 官方接口，可添加多个供应商和模型",
@@ -45,6 +62,7 @@
             "default": "openai",
             "options": [
               "openai",
+              "openai_chat",
               "gemini"
             ]
           },
@@ -63,6 +81,18 @@
           "available_models": {
             "description": "可用模型列表",
             "hint": "填写该供应商支持的生图模型名称",
+            "type": "list",
+            "default": []
+          },
+          "generation_models": {
+            "description": "文生图模型列表",
+            "hint": "新配置使用此字段；旧 available_models 会自动作为文生图模型",
+            "type": "list",
+            "default": []
+          },
+          "edit_models": {
+            "description": "改图模型列表",
+            "hint": "有参考图时优先使用第一个模型；留空则复用文生图模型",
             "type": "list",
             "default": []
           }
@@ -85,6 +115,7 @@
             "default": "gemini",
             "options": [
               "openai",
+              "openai_chat",
               "gemini"
             ]
           },
@@ -107,6 +138,18 @@
             "default": [
               "gemini-3.1-flash-image-preview"
             ]
+          },
+          "generation_models": {
+            "description": "文生图模型列表",
+            "hint": "新配置使用此字段；旧 available_models 会自动作为文生图模型",
+            "type": "list",
+            "default": []
+          },
+          "edit_models": {
+            "description": "改图模型列表",
+            "hint": "有参考图时优先使用第一个模型；留空则复用文生图模型",
+            "type": "list",
+            "default": []
           }
         }
       }

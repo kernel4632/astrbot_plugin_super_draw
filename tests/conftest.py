@@ -47,14 +47,26 @@ except ImportError:
             "At": {"qq": ""},
         }
 
-        def __init__(self, **kwargs):
+        def __init__(self, *args, **kwargs):
             for k, v in self._defaults.get(type(self).__name__, {}).items():
                 setattr(self, k, v)
+            if args:
+                if type(self).__name__ == "Plain":
+                    kwargs.setdefault("text", args[0])
+                elif type(self).__name__ == "Image":
+                    kwargs.setdefault("file", args[0])
             for k, v in kwargs.items():
                 setattr(self, k, v)
 
-    for _name in ("Image", "Reply", "Node", "Nodes", "Forward", "At"):
-        setattr(comp, _name, type(_name, (_Component,), {}))
+    for _name in ("Image", "Reply", "Node", "Nodes", "Forward", "At", "Face", "Plain"):
+        _class = type(_name, (_Component,), {})
+        if _name == "Image":
+            _class.fromFileSystem = staticmethod(
+                lambda path, imageClass=_class: imageClass(
+                    file=str(path), path=str(path)
+                )
+            )
+        setattr(comp, _name, _class)
 
     # ---- 事件与过滤器 ----
     eventMod = _makeModule("astrbot.api.event")

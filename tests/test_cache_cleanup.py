@@ -58,6 +58,8 @@ def _plugin(tmp_path: Path):
         cleanupIntervalHours=24,
         debug=False,
         enabled=True,
+        richTaskFeedback=False,
+        taskFaceId=21,
     )
     return plugin
 
@@ -104,6 +106,45 @@ def test_data_clamps_invalid_cache_settings(tmp_path):
     )
     assert d.maxCacheCount == 10000
     assert d.cleanupIntervalHours == 1
+
+
+def test_data_migrates_legacy_models_and_selects_edit_model(tmp_path):
+    d = dataMod.Data(
+        _config(
+            api_providers=[
+                {
+                    "name": "legacy",
+                    "api_type": "openai",
+                    "api_keys": ["key"],
+                    "available_models": ["generate"],
+                    "edit_models": ["edit"],
+                }
+            ]
+        ),
+        tmp_path,
+    )
+    assert d.providers[0]["generationModel"] == "generate"
+    assert d.resolveModel(False)["model"] == "generate"
+    assert d.resolveModel(True)["model"] == "edit"
+
+
+def test_data_falls_back_to_generation_model_for_edit(tmp_path):
+    d = dataMod.Data(
+        _config(
+            api_providers=[
+                {
+                    "name": "legacy",
+                    "api_type": "openai_chat",
+                    "api_keys": ["key"],
+                    "generation_models": ["generate"],
+                    "edit_models": [],
+                }
+            ]
+        ),
+        tmp_path,
+    )
+    assert d.providers[0]["apiType"] == "openai_chat"
+    assert d.resolveModel(True)["model"] == "generate"
 
 
 # ==================== 后台循环与生命周期 ====================
@@ -179,3 +220,75 @@ def test_safe_redacts_api_keys(tmp_path):
     plugin = _plugin(tmp_path)
     error = RuntimeError("request failed with sk-1234567890abcdef")
     assert plugin._safe(error) == "request failed with ***"
+
+
+async def test_rich_feedback_sends_face_and_reply_components(tmp_path):
+    from astrbot.api import message_components as Comp
+
+    plugin = _plugin(tmp_path)
+    plugin.data.richTaskFeedback = True
+    plugin.data.taskFaceId = 21
+    plugin.context = SimpleNamespace(send_message=AsyncMock())
+    event = AstrMessageEvent()
+    event.message_obj = SimpleNamespace(
+        message_id=123,
+        raw_message={"message_id": 456},
+        message=[],
+    )
+    assert plugin._messageId(event) == "123"
+    assert await plugin._sendFace("qq:GroupMessage:1", event)
+    await plugin._sendReplyStatus(
+        {"umo": "qq:GroupMessage:1", "messageId": "123"},
+        "生图完成",
+        ["result.png"],
+    )
+
+    faceMessage = plugin.context.send_message.await_args_list[0].args[1]
+    replyMessage = plugin.context.send_message.await_args_list[1].args[1]
+    assert isinstance(faceMessage[0], Comp.Face)
+    assert isinstance(replyMessage[0], Comp.Reply)
+    assert isinstance(replyMessage[1], Comp.Plain)
+    assert isinstance(replyMessage[2], Comp.Image)
+    assert replyMessage[0].id == "123"
+
+
+async def test_rich_feedback_without_message_id_falls_back_to_old_chain(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin.data.richTaskFeedback = True
+    plugin.context = SimpleNamespace(send_message=AsyncMock())
+    await plugin._sendReplyStatus(
+        {"umo": "qq:GroupMessage:1", "messageId": ""},
+        "失败",
+    )
+    sent = plugin.context.send_message.await_args.args[1]
+    assert hasattr(sent, "items")
+    assert sent.items[0] == ("message", "失败")
+
+
+def test_message_id_falls_back_to_raw_message(tmp_path):
+    plugin = _plugin(tmp_path)
+    event = AstrMessageEvent()
+    event.message_obj = SimpleNamespace(raw_message={"message_id": 456})
+    assert plugin._messageId(event) == "456"
+
+    event.message_obj = SimpleNamespace(
+        raw_message=SimpleNamespace(message_id=789)
+    )
+    assert plugin._messageId(event) == "789"
+
+
+async def test_face_component_unavailable_keeps_old_mode(tmp_path, monkeypatch):
+    from astrbot.api import message_components as Comp
+
+    plugin = _plugin(tmp_path)
+    plugin.data.richTaskFeedback = True
+    plugin.context = SimpleNamespace(send_message=AsyncMock())
+    event = AstrMessageEvent()
+    event.message_obj = SimpleNamespace(message_id=123, raw_message={})
+    face = Comp.Face
+    monkeypatch.delattr(Comp, "Face")
+    try:
+        assert not await plugin._sendFace("qq:GroupMessage:1", event)
+        assert plugin.context.send_message.await_count == 0
+    finally:
+        Comp.Face = face

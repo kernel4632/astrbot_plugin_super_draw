@@ -34,6 +34,8 @@ class Data:
             str(x).strip() for x in (config.get("ban_list") or []) if str(x).strip()
         ]  # 黑名单
         self.debug = bool(config.get("debug_mode", False))  # 调试日志
+        self.richTaskFeedback = bool(config.get("rich_task_feedback", False))
+        self.taskFaceId = self._int(config.get("task_face_id", 21), 21, 1, 999)
 
         gen = config.get("generation", {}) or {}  # 生图配置区块
         self.maxRetry = self._int(
@@ -92,20 +94,24 @@ class Data:
             if not isinstance(item, dict):
                 continue  # 跳过非法条目
             name = str(item.get("name") or "Provider").strip()  # 供应商名称
-            apiType = (
-                "gemini"
-                if str(item.get("api_type", "")).lower() == "gemini"
-                else "openai"
-            )  # 接口类型
+            apiType = str(item.get("api_type", "openai")).strip().lower()
+            if apiType not in {"openai", "openai_chat", "gemini"}:
+                apiType = "openai"
             baseUrl = str(item.get("base_url") or "").strip().rstrip("/")  # 请求地址
             if apiType == "openai" and baseUrl.endswith("/v1"):
                 baseUrl = baseUrl[:-3].rstrip("/")  # 去掉多余 /v1
             keys = [
                 str(k).strip() for k in (item.get("api_keys") or []) if str(k).strip()
             ]  # API Key 列表
-            for model in (
-                item.get("available_models") or []
-            ):  # 每个模型展开成一条 provider
+            generationModels = item.get("generation_models")
+            if not generationModels:
+                generationModels = item.get("available_models") or []
+            editModels = item.get("edit_models") or []
+            editModel = next(
+                (str(model).strip() for model in editModels if str(model).strip()),
+                "",
+            )
+            for model in generationModels:  # 每个文生图模型展开成一条 provider
                 model = str(model).strip()
                 if model and keys:  # 没 key 或没模型名就跳过
                     self.providers.append(
@@ -115,6 +121,8 @@ class Data:
                             "baseUrl": baseUrl,
                             "apiKeys": keys,
                             "model": model,
+                            "generationModel": model,
+                            "editModel": editModel,
                             "timeout": self.timeout,
                             "maxRetry": self.maxRetry,
                         }
@@ -317,6 +325,20 @@ class Data:
         self.raw["generation"] = gen
         self._save("切换模型")
         return f"已切换到：{self.modelKey}"
+
+    def resolveModel(self, hasImages: bool) -> dict | None:
+        """按是否有参考图选择当前供应商的生成模型或改图模型。"""
+        if not self.providers or not (0 <= self.modelIndex < len(self.providers)):
+            return None
+        provider = self.providers[self.modelIndex]
+        if hasImages and provider.get("editModel"):
+            selected = dict(provider)
+            selected["model"] = provider["editModel"]
+            selected["modelRole"] = "edit"
+            return selected
+        selected = dict(provider)
+        selected["modelRole"] = "generation"
+        return selected
 
     # ========== 黑名单 ==========
 
