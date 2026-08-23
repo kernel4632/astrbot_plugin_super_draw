@@ -425,7 +425,8 @@ class SuperDraw(Star):
         if not self._richAvailable(event):
             return False
         try:
-            result = self.context.send_message(umo, [Comp.Face(id=self.data.taskFaceId)])
+            chain = self._componentChain([Comp.Face(id=self.data.taskFaceId)])
+            result = self.context.send_message(umo, chain)
             if inspect.isawaitable(result):
                 await result
             return True
@@ -449,7 +450,9 @@ class SuperDraw(Star):
                     Comp.Plain(text),
                 ]
                 components.extend(Comp.Image.fromFileSystem(path) for path in paths)
-                result = self.context.send_message(req["umo"], components)
+                result = self.context.send_message(
+                    req["umo"], self._componentChain(components)
+                )
                 if inspect.isawaitable(result):
                     await result
                 return
@@ -463,6 +466,18 @@ class SuperDraw(Star):
         result = self.context.send_message(req["umo"], fallback)
         if inspect.isawaitable(result):
             await result
+
+    def _componentChain(self, components: list[Any]) -> MessageChain:
+        """把组件列表包装成 AstrBot 主动发送 API 要求的 MessageChain。"""
+        try:
+            return MessageChain(chain=components)
+        except TypeError:
+            # 兼容早期 MessageChain 构造器不接受 chain 参数的版本。
+            chain = MessageChain()
+            if not hasattr(chain, "chain"):
+                raise TypeError("AstrBot MessageChain 不支持组件列表")
+            chain.chain.extend(components)
+            return chain
 
     async def _images(self, event: AstrMessageEvent) -> list[bytes]:
         """从消息、回复、合并转发、@头像和文本 URL 中收集参考图。"""

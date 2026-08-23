@@ -78,15 +78,18 @@ except ImportError:
     class MessageChain:
         """链式构造消息，记录调用顺序方便断言。"""
 
-        def __init__(self):
+        def __init__(self, chain=None):
             self.items = []
+            self.chain = list(chain or [])
 
         def message(self, text):
             self.items.append(("message", text))
+            self.chain.append(("message", text))
             return self
 
         def file_image(self, path):
             self.items.append(("file_image", path))
+            self.chain.append(("file_image", path))
             return self
 
     class _StubFilter:

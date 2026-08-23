@@ -243,8 +243,8 @@ async def test_rich_feedback_sends_face_and_reply_components(tmp_path):
         ["result.png"],
     )
 
-    faceMessage = plugin.context.send_message.await_args_list[0].args[1]
-    replyMessage = plugin.context.send_message.await_args_list[1].args[1]
+    faceMessage = plugin.context.send_message.await_args_list[0].args[1].chain
+    replyMessage = plugin.context.send_message.await_args_list[1].args[1].chain
     assert isinstance(faceMessage[0], Comp.Face)
     assert isinstance(replyMessage[0], Comp.Reply)
     assert isinstance(replyMessage[1], Comp.Plain)
