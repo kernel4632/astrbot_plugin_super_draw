@@ -15,6 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+from astrbot.api.event import AstrMessageEvent
+
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "astrbot_plugin_super_draw"
 
@@ -140,3 +142,40 @@ async def test_initialize_starts_and_terminate_stops_loop(monkeypatch, tmp_path)
 async def test_terminate_tolerates_missing_background_tasks(tmp_path):
     plugin = _plugin(tmp_path)
     await plugin.terminate()  # 没有 _tasks 时也不应报错
+
+
+def test_event_helpers_and_group_handler_are_present(tmp_path):
+    plugin = _plugin(tmp_path)
+    plugin.data = SimpleNamespace(
+        addTalk=lambda uid, name: 2,
+        debug=False,
+    )
+    event = AstrMessageEvent()
+    event.message_str = "/生图 一只猫"
+    event.message_obj = SimpleNamespace(
+        raw_message={"user_id": 12345},
+        message=[],
+    )
+
+    assert plugin._uid(event) == "12345"
+    assert plugin._name(event) == "12345"
+    assert plugin._body(event) == "一只猫"
+    assert asyncio.run(plugin.on_group(event)) is None
+
+
+def test_event_helper_finds_at_target(tmp_path):
+    from astrbot.api import message_components as Comp
+
+    plugin = _plugin(tmp_path)
+    event = AstrMessageEvent()
+    event.message_obj = SimpleNamespace(
+        self_id="10000",
+        message=[Comp.At(qq="24680")],
+    )
+    assert plugin._atTarget(event) == "24680"
+
+
+def test_safe_redacts_api_keys(tmp_path):
+    plugin = _plugin(tmp_path)
+    error = RuntimeError("request failed with sk-1234567890abcdef")
+    assert plugin._safe(error) == "request failed with ***"

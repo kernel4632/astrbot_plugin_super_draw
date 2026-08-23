@@ -595,6 +595,51 @@ class SuperDraw(Star):
 
     # ========== 后台任务管理 ==========
 
+    def _uid(self, event: AstrMessageEvent) -> str:
+        """取发送者 QQ 号。"""
+        if callable(getattr(event, "get_sender_id", None)):
+            return str(event.get_sender_id() or "")
+        msg = getattr(event, "message_obj", None)
+        raw = getattr(msg, "raw_message", None) if msg else None
+        if isinstance(raw, dict):
+            return str(raw.get("user_id") or raw.get("sender", {}).get("user_id") or "")
+        return str(getattr(raw, "user_id", "") or "")
+
+    def _name(self, event: AstrMessageEvent) -> str:
+        """取发送者昵称。"""
+        if callable(getattr(event, "get_sender_name", None)):
+            return str(event.get_sender_name() or "")
+        return self._uid(event) or "群友"
+
+    def _body(self, event: AstrMessageEvent) -> str:
+        """取命令参数部分，例如 /生图 猫 → 猫。"""
+        text = (event.message_str or "").strip()
+        return text.split(maxsplit=1)[1].strip() if " " in text else ""
+
+    def _real(self, event: Any) -> AstrMessageEvent:
+        """兼容 AstrBot ContextWrapper，提取真实事件。"""
+        if isinstance(event, AstrMessageEvent):
+            return event
+        for attr in ("event", "context"):
+            inner = getattr(event, attr, None)
+            if isinstance(inner, AstrMessageEvent):
+                return inner
+            deeper = getattr(inner, "event", None)
+            if isinstance(deeper, AstrMessageEvent):
+                return deeper
+        return event
+
+    def _atTarget(self, event: AstrMessageEvent) -> str:
+        """从消息的 @ 组件取管理员要操作的目标 QQ 号。"""
+        msg = getattr(event, "message_obj", None)
+        for component in getattr(msg, "message", []) if msg else []:
+            if isinstance(component, Comp.At):
+                qq = str(getattr(component, "qq", "") or "")
+                selfId = str(getattr(msg, "self_id", "") or "")
+                if qq and qq != selfId and qq != "all":
+                    return qq
+        return ""
+
     def _startBg(self, coro, name: str):
         """启动一个后台协程任务，并清理已完成的旧任务。"""
 
@@ -621,6 +666,10 @@ class SuperDraw(Star):
             or "status code: 400" in t
             or "bad request" in t
         )
+
+    def _safe(self, e: Exception) -> str:
+        """脱敏错误信息，避免把 API Key 回传给用户。"""
+        return re.sub(r"(sk-|key-|AIza)[A-Za-z0-9_-]{8,}", "***", str(e))
 
     async def _cacheLoop(self) -> None:
         """常驻后台：定时清理缓存目录，只保留最近 maxCacheCount 张图。"""
