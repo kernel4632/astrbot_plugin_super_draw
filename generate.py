@@ -131,6 +131,8 @@ async def _callOpenAi(provider: dict[str, Any], apiKey: str, prompt: str, images
         request["quality"] = quality
 
     if images:
+        request.pop("response_format", None)
+        request.pop("size", None)
         return await _callOpenAiJsonEdit(provider, apiKey, request, images)
     else:
         client = _openAiClient(provider.get("baseUrl") or "https://api.openai.com", apiKey, int(provider.get("timeout", 180)))
@@ -168,7 +170,7 @@ async def _callOpenAiJsonEdit(
     imageDataUris = _prepareOpenAiImageDataUris(images)
     if not imageDataUris:
         raise ValueError("OpenAI 改图至少需要一张参考图。")
-    # 多数 JSON 兼容实现把单张图定义为字符串；只有多图时才使用数组。
+    # JSON 改图服务通常直接 base64 解码 image，不接受 data URI 前缀。
     request["image"] = imageDataUris[0] if len(imageDataUris) == 1 else imageDataUris
     baseUrl = (provider.get("baseUrl") or "https://api.openai.com").rstrip("/")
     apiUrl = baseUrl if baseUrl.endswith("/v1") else f"{baseUrl}/v1"
@@ -298,13 +300,13 @@ def _chatImageValues(value: Any) -> list[bytes | str]:
 
 
 def _prepareOpenAiImageDataUris(images: list[bytes]) -> list[str]:
-    """把参考图转为 JSON 改图接口使用的 data URI。"""
+    """把参考图转为 JSON 改图接口使用的纯 base64 字符串。"""
 
     result: list[str] = []
     for imageBytes in images[:16]:
         cleanBytes, mime = normalize_to_supported_image(imageBytes, target_fmt="png")
         encoded = base64.b64encode(cleanBytes).decode("ascii")
-        result.append(f"data:{mime};base64,{encoded}")
+        result.append(encoded)
     return result
 
 
