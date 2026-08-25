@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import base64
+import inspect
 import re
+from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
+
+from astrbot.api import logger
 
 try:
     import astrbot.api.message_components as Comp
@@ -44,7 +48,7 @@ class Images:
                 break
         return result[:8]
 
-    async def download(self, source: str | None) -> bytes | None:
+    async def download(self, source: str | None, local: bool = False) -> bytes | None:
         if not source:
             return None
         value = str(source)
@@ -56,7 +60,29 @@ class Images:
         except Exception:
             return None
 
+        if local:
+            try:
+                raw = Path(value).read_bytes()
+                return raw if self.valid(raw) else None
+            except OSError:
+                pass
+
         parsed = urlparse(value)
+        if local and parsed.scheme == "file":
+            value = unquote(parsed.path)
+            if value.startswith("/") and len(value) > 2 and value[2] == ":":
+                value = value[1:]
+            try:
+                raw = Path(value).read_bytes()
+                return raw if self.valid(raw) else None
+            except OSError:
+                return None
+        if local and not parsed.scheme:
+            try:
+                raw = Path(value).read_bytes()
+                return raw if self.valid(raw) else None
+            except OSError:
+                return None
         if parsed.scheme not in ("http", "https"):
             return None
         try:
@@ -87,13 +113,17 @@ class Images:
         if value is None or len(result) >= 8:
             return
         if self.kind(value, "Image"):
-            source = getattr(value, "url", None) or getattr(value, "file", None)
-            data = await self.download(source)
+            data = await self.component(value)
             if data:
                 result.append(data)
             return
         if self.kind(value, "Reply"):
-            await self.scan(getattr(value, "chain", None), event, result, forwards)
+            chain = getattr(value, "chain", None)
+            before = len(result)
+            if chain:
+                await self.scan(chain, event, result, forwards)
+            if len(result) == before:
+                await self.reply(self.id(value), event, result, forwards)
             return
         if self.kind(value, "Node"):
             await self.scan(getattr(value, "content", None), event, result, forwards)
@@ -116,12 +146,23 @@ class Images:
         kind = str(value.get("type") or "").lower()
         data = value.get("data") if isinstance(value.get("data"), dict) else value
         if kind == "image":
-            image = await self.download(data.get("url") or data.get("file"))
+            image = await self.download(
+                data.get("url") or data.get("path") or data.get("file"),
+                local=True,
+            )
             if image:
                 result.append(image)
             return
+        if kind == "reply":
+            chain = data.get("chain")
+            before = len(result)
+            if chain:
+                await self.scan(chain, event, result, forwards)
+            if len(result) == before:
+                await self.reply(self.id(data), event, result, forwards)
+            return
         if kind == "forward":
-            await self.forward(str(data.get("id") or ""), event, result, forwards)
+            await self.forward(self.id(data), event, result, forwards)
             return
         for key in ("messages", "message", "nodes", "content", "data"):
             child = value.get(key)
@@ -131,24 +172,92 @@ class Images:
                     return
 
     async def forward(self, forward_id: str, event: Any, result: list[bytes], forwards: set[str]) -> None:
-        if not forward_id or forward_id in forwards:
+        marker = f"forward:{forward_id}"
+        if not forward_id or marker in forwards:
             return
-        forwards.add(forward_id)
-        call = getattr(getattr(event, "bot", None), "call_action", None)
-        if not callable(call):
-            return
+        forwards.add(marker)
         try:
-            payload = await call("get_forward_msg", message_id=forward_id)
-        except Exception:
+            payload = await self.action(event, "get_forward_msg", forward_id)
+        except Exception as error:
+            logger.warning(f"[SuperDraw] 读取合并转发消息失败: {error}")
             return
-        nodes = payload.get("messages", []) if isinstance(payload, dict) else []
-        if isinstance(payload, dict) and isinstance(payload.get("data"), dict):
-            nodes = payload["data"].get("messages", nodes)
-        for node in nodes:
-            content = node.get("content") or node.get("message") or [] if isinstance(node, dict) else node
-            await self.scan(content, event, result, forwards)
-            if len(result) >= 8:
-                return
+        await self.scan(payload, event, result, forwards)
+
+    async def reply(self, message_id: str, event: Any, result: list[bytes], forwards: set[str]) -> None:
+        marker = f"reply:{message_id}"
+        if not message_id or marker in forwards:
+            return
+        forwards.add(marker)
+        try:
+            payload = await self.action(event, "get_msg", message_id)
+        except Exception as error:
+            logger.warning(f"[SuperDraw] 读取引用消息失败: {error}")
+            return
+        await self.scan(payload, event, result, forwards)
+
+    async def action(self, event: Any, name: str, message_id: str) -> Any:
+        bot = getattr(event, "bot", None)
+        direct = getattr(bot, "call_action", None)
+        nested = getattr(getattr(bot, "api", None), "call_action", None)
+        call = direct if callable(direct) else nested
+        if not callable(call):
+            raise RuntimeError("当前消息平台不支持 OneBot 消息查询")
+
+        routing = self.routing(event)
+        errors: list[Exception] = []
+        keys = ("message_id", "id") if name == "get_forward_msg" else ("message_id",)
+        values: list[Any] = [message_id]
+        if message_id.isdigit():
+            values.insert(0, int(message_id))
+        for key in keys:
+            for value in values:
+                try:
+                    response = call(name, **{key: value}, **routing)
+                    return await response if inspect.isawaitable(response) else response
+                except Exception as error:
+                    errors.append(error)
+        raise errors[-1] if errors else RuntimeError(f"{name} 调用失败")
+
+    async def component(self, value: Any) -> bytes | None:
+        convert = getattr(value, "convert_to_base64", None)
+        if callable(convert):
+            try:
+                encoded = convert()
+                encoded = await encoded if inspect.isawaitable(encoded) else encoded
+                if encoded:
+                    return base64.b64decode(str(encoded), validate=True)
+            except Exception:
+                pass
+        source = (
+            getattr(value, "url", None)
+            or getattr(value, "path", None)
+            or getattr(value, "file", None)
+        )
+        return await self.download(source, local=True)
+
+    @staticmethod
+    def routing(event: Any) -> dict[str, Any]:
+        message = getattr(event, "message_obj", None)
+        self_id = getattr(message, "self_id", None)
+        raw = getattr(message, "raw_message", None)
+        if not self_id:
+            self_id = raw.get("self_id") if isinstance(raw, dict) else getattr(raw, "self_id", None)
+        return {"self_id": self_id} if self_id else {}
+
+    @staticmethod
+    def id(value: Any) -> str:
+        if isinstance(value, dict):
+            values = (value.get("id"), value.get("message_id"), value.get("msg_id"), value.get("resid"), value.get("forward_id"))
+        else:
+            data = getattr(value, "data", None)
+            values = (
+                getattr(value, "id", None),
+                getattr(value, "message_id", None),
+                getattr(value, "msg_id", None),
+                getattr(value, "resid", None),
+                data.get("id") if isinstance(data, dict) else None,
+            )
+        return next((str(item).strip() for item in values if item is not None and str(item).strip()), "")
 
     @staticmethod
     def kind(value: Any, name: str) -> bool:
