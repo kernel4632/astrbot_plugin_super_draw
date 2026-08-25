@@ -1,8 +1,8 @@
 import asyncio
 from types import SimpleNamespace
 
-from astrbot_plugin_super_draw.app import App, DrawRequest
-from astrbot_plugin_super_draw.providers import ProviderFailure
+from astrbot_plugin_super_draw.draw.flow import DrawRequest, Flow
+from astrbot_plugin_super_draw.draw.model import ModelFailure
 
 
 def build(tmp_path, monkeypatch, kind: str):
@@ -17,16 +17,16 @@ def build(tmp_path, monkeypatch, kind: str):
         ],
         "points": {"new_user_points": 100, "draw_cost_per_image": 10, "bad_request_penalty_points": 50},
     }
-    app = App(SimpleNamespace(), config, tmp_path)
+    app = Flow(SimpleNamespace(), config, tmp_path)
 
     async def fail(*args, **kwargs):
-        raise ProviderFailure(kind, "failed")
+        raise ModelFailure(kind, "failed")
 
     async def reply(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("astrbot_plugin_super_draw.app.provider.draw", fail)
-    monkeypatch.setattr("astrbot_plugin_super_draw.app.reply.failure", reply)
+    monkeypatch.setattr("astrbot_plugin_super_draw.draw.flow.model.draw", fail)
+    monkeypatch.setattr("astrbot_plugin_super_draw.draw.flow.send.failure", reply)
     return app
 
 
@@ -40,7 +40,7 @@ def test_request_failure_refunds_the_reserved_points(tmp_path, monkeypatch):
 
     asyncio.run(run())
 
-    assert app.points.users["u1"]["points"] == 100
+    assert app.point.users["u1"]["points"] == 100
 
 
 def test_policy_failure_refunds_then_applies_penalty(tmp_path, monkeypatch):
@@ -53,4 +53,4 @@ def test_policy_failure_refunds_then_applies_penalty(tmp_path, monkeypatch):
 
     asyncio.run(run())
 
-    assert app.points.users["u1"]["points"] == 50
+    assert app.point.users["u1"]["points"] == 50

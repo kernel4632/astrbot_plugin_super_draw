@@ -11,7 +11,8 @@ from astrbot.api.star import Context, Star
 from astrbot.core.config.astrbot_config import AstrBotConfig
 from astrbot.core.star.star_tools import StarTools
 
-from .app import App, DrawRequest
+from .draw.flow import Flow
+from .draw.task import DrawRequest
 
 
 class Event:
@@ -81,22 +82,22 @@ class Event:
 class SuperDraw(Star):
     def __init__(self, context: Context, config: AstrBotConfig):
         super().__init__(context)
-        self.app = App(context, config, StarTools.get_data_dir())
+        self.flow = Flow(context, config, StarTools.get_data_dir())
 
     async def initialize(self) -> None:
-        if not self.app.settings.providers:
+        if not self.flow.config.providers:
             logger.error("[SuperDraw] 未配置模型，请在 api_providers 填写 Key 和模型。")
         else:
-            logger.info(f"[SuperDraw] 超级生图插件启动，模型：{self.app.settings.modelKey}")
+            logger.info(f"[SuperDraw] 超级生图插件启动，模型：{self.flow.config.modelKey}")
 
     async def terminate(self) -> None:
-        await self.app.close()
+        await self.flow.close()
 
     @filter.command("生图")
     async def cmd_draw(self, event: AstrMessageEvent):
         view = Event(event)
-        prompt, preset = self.app.resolve(view.body())
-        result = await self.app.draw(view.request(prompt))
+        prompt, preset = self.flow.resolve(view.body())
+        result = await self.flow.draw(view.request(prompt))
         if preset:
             result += f"\n预设：{preset}"
         yield event.plain_result(result)
@@ -105,7 +106,7 @@ class SuperDraw(Star):
     @filter.command("生图取消")
     async def cmd_cancel(self, event: AstrMessageEvent):
         view = Event(event)
-        result = self.app.cancel(
+        result = self.flow.cancel(
             view.user(),
             view.body().strip(),
             getattr(event, "role", "") == "admin",
@@ -115,24 +116,24 @@ class SuperDraw(Star):
 
     @filter.command("生图积分")
     async def cmd_points(self, event: AstrMessageEvent):
-        yield event.plain_result(self.app.balance(Event(event).user()))
+        yield event.plain_result(self.flow.balance(Event(event).user()))
         event.stop_event()
 
     @filter.command("生图预设")
     async def cmd_preset(self, event: AstrMessageEvent):
-        yield event.plain_result(self.app.preset(Event(event).body()))
+        yield event.plain_result(self.flow.preset(Event(event).body()))
         event.stop_event()
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("生图模型")
     async def cmd_model(self, event: AstrMessageEvent):
-        yield event.plain_result(self.app.model(Event(event).body()))
+        yield event.plain_result(self.flow.model(Event(event).body()))
         event.stop_event()
 
     @filter.permission_type(filter.PermissionType.ADMIN)
     @filter.command("生图开关")
     async def cmd_toggle(self, event: AstrMessageEvent):
-        enabled = self.app.toggle()
+        enabled = self.flow.toggle()
         yield event.plain_result(f"生图功能已{'开启' if enabled else '关闭'}")
         event.stop_event()
 
@@ -155,7 +156,7 @@ class SuperDraw(Star):
             yield event.plain_result("请填写积分数量，例如：/生图改分 @用户 50")
             event.stop_event()
             return
-        result = self.app.give(target, amount, "管理员改分")
+        result = self.flow.give(target, amount, "管理员改分")
         action = "赠送" if amount > 0 else "扣除"
         yield event.plain_result(f"已向 @{target} {action} {abs(amount)} 分，{result}")
         event.stop_event()
@@ -175,7 +176,7 @@ class SuperDraw(Star):
         if not prompt.strip():
             return "请提供生图描述。"
         values = [url.strip() for url in urls.split(",") if url.strip()]
-        return await self.app.draw(Event(event).request(prompt, True, values))
+        return await self.flow.draw(Event(event).request(prompt, True, values))
 
     @filter.llm_tool(name="super_draw_data")
     async def tool_data(
@@ -194,7 +195,7 @@ class SuperDraw(Star):
             reason(string): 修改原因
         """
         view = Event(event)
-        return self.app.data(action, user_key.strip() or view.user(), delta, reason)
+        return self.flow.data(action, user_key.strip() or view.user(), delta, reason)
 
     @filter.llm_tool(name="super_draw_ban")
     async def tool_ban(
@@ -210,13 +211,13 @@ class SuperDraw(Star):
         """
         if not action.strip():
             return "请提供 action：list、add、remove"
-        return self.app.ban(action, user_id)
+        return self.flow.ban(action, user_id)
 
     @filter.event_message_type(filter.EventMessageType.GROUP_MESSAGE)
     async def on_group(self, event: AstrMessageEvent):
         view = Event(event)
-        earned = self.app.talk(view.user(), view.name())
-        if earned and self.app.settings.debug:
+        earned = self.flow.talk(view.user(), view.name())
+        if earned and self.flow.config.debug:
             logger.info(f"[SuperDraw] +{earned}: {view.user()}")
 
 

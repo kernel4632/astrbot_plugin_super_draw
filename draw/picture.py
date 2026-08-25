@@ -3,13 +3,19 @@
 from __future__ import annotations
 
 import base64
+import io
 import inspect
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote, urlparse
 
 from astrbot.api import logger
+
+try:
+    from PIL import Image
+except ImportError:
+    Image = None
 
 try:
     import astrbot.api.message_components as Comp
@@ -17,7 +23,7 @@ except ImportError:  # 允许在没有 AstrBot 的环境中导入和测试
     Comp = None
 
 
-class Images:
+class Picture:
     async def collect(self, event: Any) -> list[bytes]:
         msg = getattr(event, "message_obj", None)
         message = getattr(msg, "message", None) if msg else None
@@ -273,6 +279,50 @@ class Images:
         )
 
 
-images = Images()
+SUPPORTED_FORMATS = {"image/png", "image/jpeg", "image/webp", "image/heic", "image/heif"}
+TargetFormat = Literal["png", "jpeg"]
 
-__all__ = ["images"]
+
+def detect(data: bytes) -> str:
+    """根据图片文件头返回 MIME 类型。"""
+    if data.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "image/gif"
+    if data.startswith(b"RIFF") and len(data) > 12 and data[8:12] == b"WEBP":
+        return "image/webp"
+    if len(data) > 12 and data[4:8] == b"ftyp":
+        if data[8:12] in (b"heic", b"heix", b"heim", b"heis"):
+            return "image/heic"
+        if data[8:12] in (b"mif1", b"msf1", b"heif"):
+            return "image/heif"
+    return "application/octet-stream"
+
+
+def normalize_to_supported_image(data: bytes, target_fmt: TargetFormat = "png") -> tuple[bytes, str]:
+    """保留静态图片，把动态图或其他格式转换为静态首帧。"""
+    mime = detect(data)
+    if mime in SUPPORTED_FORMATS:
+        return data, mime
+    if Image is None:
+        raise RuntimeError(f"图片格式 {mime} 需要 Pillow 转换。")
+
+    image = Image.open(io.BytesIO(data))
+    image.seek(0)
+    output = io.BytesIO()
+    if target_fmt == "png":
+        if image.mode not in ("RGB", "RGBA"):
+            image = image.convert("RGBA")
+        image.save(output, format="PNG")
+        return output.getvalue(), "image/png"
+    if image.mode not in ("RGB", "L"):
+        image = image.convert("RGB")
+    image.save(output, format="JPEG", quality=90)
+    return output.getvalue(), "image/jpeg"
+
+
+picture = Picture()
+
+__all__ = ["picture", "normalize_to_supported_image"]

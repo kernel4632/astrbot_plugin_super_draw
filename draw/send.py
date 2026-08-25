@@ -13,7 +13,7 @@ except ImportError:  # 允许独立导入模块
     MessageChain = None
 
 
-class Reply:
+class Send:
     async def start(self, context: Any, umo: str, text: str, message_id: str = "") -> Any:
         return await self.send(context, umo, text, message_id)
 
@@ -58,6 +58,6 @@ class Reply:
             return chain
 
 
-reply = Reply()
+send = Send()
 
-__all__ = ["reply"]
+__all__ = ["send"]

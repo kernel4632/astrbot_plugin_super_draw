@@ -7,7 +7,7 @@ import tempfile
 from pathlib import Path
 
 
-class Files:
+class Temp:
     def save(self, data: bytes) -> str | None:
         if not data:
             return None
@@ -28,6 +28,6 @@ class Files:
             return False
 
 
-files = Files()
+temp = Temp()
 
-__all__ = ["files"]
+__all__ = ["temp"]

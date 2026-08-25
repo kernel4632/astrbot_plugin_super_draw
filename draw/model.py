@@ -11,9 +11,9 @@ import httpx
 from openai import AsyncOpenAI
 
 try:
-    from .tool.picture import normalize_to_supported_image
+    from .picture import normalize_to_supported_image
 except ImportError:
-    from tool.picture import normalize_to_supported_image
+    from picture import normalize_to_supported_image
 
 try:
     from google import genai
@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - optional dependency in small test envs
     genai_types = None
 
 
-class ProviderFailure(Exception):
+class ModelFailure(Exception):
     """A provider error with a stable kind for callers and retry logic."""
 
     def __init__(self, kind: str, message: str, status: int | None = None, code: str | None = None):
@@ -42,7 +42,7 @@ def get(config: Any, name: str, default: Any = None) -> Any:
     return getattr(config, name, default)
 
 
-def failure(error: Exception, fallback: str = "request") -> ProviderFailure:
+def failure(error: Exception, fallback: str = "request") -> ModelFailure:
     status = getattr(error, "status_code", None)
     response = getattr(error, "response", None)
     status = status or getattr(response, "status_code", None)
@@ -57,12 +57,12 @@ def failure(error: Exception, fallback: str = "request") -> ProviderFailure:
         message = f"{message}: {response.text}"
     lower = f"{code or ''} {message}".lower()
     if "policy" in lower or "content_filter" in lower or "safety" in lower:
-        return ProviderFailure("policy", message, status, str(code) if code else None)
+        return ModelFailure("policy", message, status, str(code) if code else None)
     if isinstance(error, (asyncio.TimeoutError, httpx.TimeoutException)) or "timeout" in lower:
-        return ProviderFailure("timeout", message, status, str(code) if code else None)
+        return ModelFailure("timeout", message, status, str(code) if code else None)
     if isinstance(error, (httpx.NetworkError,)) or "connection" in lower:
-        return ProviderFailure("network", message, status, str(code) if code else None)
-    return ProviderFailure(fallback, message, status, str(code) if code else None)
+        return ModelFailure("network", message, status, str(code) if code else None)
+    return ModelFailure(fallback, message, status, str(code) if code else None)
 
 
 async def decode(payload: Any, timeout: int) -> list[bytes]:
@@ -87,7 +87,7 @@ async def decode(payload: Any, timeout: int) -> list[bytes]:
     return result
 
 
-class Provider:
+class Model:
     async def draw(
         self,
         provider_config: Any,
@@ -99,7 +99,7 @@ class Provider:
         key_getter: Callable[[Any], Any] | None = None,
     ) -> list[bytes]:
         retries = max(1, int(get(provider_config, "maxRetry", 3)))
-        last: ProviderFailure | None = None
+        last: ModelFailure | None = None
         for attempt in range(retries):
             try:
                 key = key_getter(provider_config) if key_getter else get(provider_config, "apiKey", "")
@@ -114,13 +114,13 @@ class Provider:
                 if kind == "gemini":
                     return await self.gemini(provider_config, str(key), prompt, images, size, count)
                 return await self.openai(provider_config, str(key), prompt, images, size, quality, count)
-            except ProviderFailure as error:
+            except ModelFailure as error:
                 last = error
                 retryable = error.kind in {"timeout", "network"} or error.status == 429 or (error.status is not None and error.status >= 500)
                 if not retryable or attempt + 1 >= retries:
                     raise
                 await asyncio.sleep(min(attempt + 1, 3))
-        raise last or ProviderFailure("unavailable", "provider did not return an image")
+        raise last or ModelFailure("unavailable", "provider did not return an image")
 
     async def openai(self, config: Any, key: str, prompt: str, images: list[bytes], size: str, quality: str, count: int) -> list[bytes]:
         base = (get(config, "baseUrl", "https://api.openai.com") or "https://api.openai.com").rstrip("/")
@@ -145,12 +145,12 @@ class Provider:
             else:
                 client = AsyncOpenAI(api_key=key, base_url=base if base.endswith("/v1") else f"{base}/v1", timeout=timeout, max_retries=0)
                 result = await decode(await client.images.generate(**request), timeout)
-        except ProviderFailure:
+        except ModelFailure:
             raise
         except Exception as error:
             raise failure(error) from error
         if not result:
-            raise ProviderFailure("unavailable", "OpenAI response has no explicit b64_json or data URI image")
+            raise ModelFailure("unavailable", "OpenAI response has no explicit b64_json or data URI image")
         return result
 
     async def chat(self, config: Any, key: str, prompt: str, images: list[bytes], size: str, quality: str, count: int) -> list[bytes]:
@@ -178,12 +178,12 @@ class Provider:
         except Exception as error:
             raise failure(error) from error
         if not result:
-            raise ProviderFailure("unavailable", "OpenAI Chat response has no explicit image data")
+            raise ModelFailure("unavailable", "OpenAI Chat response has no explicit image data")
         return result
 
     async def gemini(self, config: Any, key: str, prompt: str, images: list[bytes], size: str, count: int) -> list[bytes]:
         if genai is None or genai_types is None:
-            raise ProviderFailure("unavailable", "google-genai dependency is unavailable")
+            raise ModelFailure("unavailable", "google-genai dependency is unavailable")
         try:
             client = genai.Client(api_key=key)
             parts = [genai_types.Part.from_text(text=prompt)]
@@ -204,8 +204,8 @@ class Provider:
         except Exception as error:
             raise failure(error) from error
         if not result:
-            raise ProviderFailure("unavailable", "Gemini response has no inline_data image")
+            raise ModelFailure("unavailable", "Gemini response has no inline_data image")
         return result
 
 
-provider = Provider()
+model = Model()

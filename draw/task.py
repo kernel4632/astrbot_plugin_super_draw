@@ -4,10 +4,33 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable
+from dataclasses import dataclass, field
 from typing import Any
 
 
-class Jobs:
+@dataclass(slots=True)
+class DrawRequest:
+    user_id: str
+    origin: str
+    message_id: str
+    prompt: str
+    images: list[bytes] = field(default_factory=list)
+    from_tool: bool = False
+    source: Any = None
+    urls: list[str] = field(default_factory=list)
+    message_text: str = ""
+
+
+@dataclass(slots=True)
+class DrawJob:
+    id: str
+    request: DrawRequest
+    reserved_points: int
+    model: Any
+    task: asyncio.Task[None] | None = None
+
+
+class Task:
     def __init__(self, limit: int = 3) -> None:
         self.limit = max(1, limit)
         self.tasks: set[asyncio.Task[Any]] = set()
@@ -34,6 +57,6 @@ class Jobs:
         self.tasks = {task for task in self.tasks if not task.done()}
 
 
-jobs = Jobs()
+task = Task()
 
-__all__ = ["jobs"]
+__all__ = ["task"]

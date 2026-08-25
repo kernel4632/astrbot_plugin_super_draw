@@ -1,8 +1,8 @@
-from astrbot_plugin_super_draw.settings import Settings
+from astrbot_plugin_super_draw.setting.config import Config
 
 
 def test_settings_only_reads_available_models():
-    settings = Settings(
+    settings = Config(
         {
             "api_providers": [
                 {
@@ -22,7 +22,7 @@ def test_settings_only_reads_available_models():
 
 
 def test_settings_rejects_unknown_protocols():
-    settings = Settings(
+    settings = Config(
         {
             "api_providers": [
                 {
@@ -38,7 +38,7 @@ def test_settings_rejects_unknown_protocols():
 
 
 def test_settings_replaces_a_missing_selected_model():
-    settings = Settings(
+    settings = Config(
         {
             "generation": {"model": "Images/removed"},
             "api_providers": [

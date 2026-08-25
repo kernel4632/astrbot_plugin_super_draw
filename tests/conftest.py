@@ -143,7 +143,7 @@ except ImportError:
     cfgParent.astrbot_config = cfgMod
 
     class AstrBotConfig(dict):
-        """dict 版配置对象：Data 里 config.get / raw['x']=v / save_config 都能用。"""
+        """测试配置对象，支持读取、修改和保存插件设置。"""
 
         def save_config(self):
             pass

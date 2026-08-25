@@ -1,10 +1,10 @@
 from pathlib import Path
 
-from astrbot_plugin_super_draw.points import Points
+from astrbot_plugin_super_draw.user.point import Point
 
 
 def test_request_failure_refunds_all_reserved_points(tmp_path: Path):
-    points = Points(tmp_path / "points.json", {"new_user_points": 100})
+    points = Point(tmp_path / "points.json", {"new_user_points": 100})
     reserved = points.spend("u1", 10)
 
     points.refund("u1", reserved)
@@ -14,7 +14,7 @@ def test_request_failure_refunds_all_reserved_points(tmp_path: Path):
 
 
 def test_policy_failure_is_the_only_penalty_path(tmp_path: Path):
-    points = Points(tmp_path / "points.json", {"new_user_points": 100})
+    points = Point(tmp_path / "points.json", {"new_user_points": 100})
     reserved = points.spend("u1", 10)
 
     points.refund("u1", reserved)

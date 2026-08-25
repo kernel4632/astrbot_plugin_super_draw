@@ -1,4 +1,4 @@
-# AstrBot 超级生图插件 5.0.0
+# AstrBot 超级生图插件 5.1.0
 
 群聊生图插件。发送 `/生图 一只猫坐在窗边看雨` 即可开始。消息、回复和合并聊天记录中的图片会作为参考图。Bot 也能调用 `super_draw` 工具生图。
 
@@ -30,18 +30,25 @@
 
 生成图片只写入系统临时目录。发送结束后立即删除，不保存长期图片缓存。
 
-## 模块
+## 文件结构
 
 ```
-main.py      AstrBot 命令、工具和事件转换
-app.py       生图流程、积分结算、任务和评价
-settings.py  WebUI 配置与当前模型
-points.py    积分 JSON 数据
-images.py    参考图提取和下载
-providers.py OpenAI Images、OpenAI Chat、Gemini 请求
-jobs.py      同时运行任务限制
-files.py     一次性临时图片
-reply.py     引用回复与普通消息回退
+main.py                 机器人收到消息后，从这里进入插件
+
+draw/flow.py            开始、执行和取消生图的完整顺序
+draw/picture.py         消息、引用和合并转发中的参考图片
+draw/model.py           OpenAI Images、OpenAI Chat、Gemini 请求
+draw/task.py            正在运行的生图任务和并发数量
+draw/send.py            发送成功、失败和取消消息
+draw/temp.py            发送前保存、发送后删除的临时图片
+
+user/point.py           用户积分、退款和发言加分
+user/preset.py          提示词预设的查看、添加和删除
+user/ban.py             生图黑名单的查看、添加和删除
+
+setting/config.py       WebUI 配置和当前模型
 ```
 
 积分按用户 ID 全局保存，文件在 AstrBot 插件数据目录的 `points.json`。
+
+找文件时只需要按实际要改的功能判断：引用图片问题看 `draw/picture.py`，模型请求问题看 `draw/model.py`，积分问题看 `user/point.py`，配置问题看 `setting/config.py`。

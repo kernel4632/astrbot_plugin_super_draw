@@ -3,18 +3,18 @@ import base64
 from pathlib import Path
 from types import SimpleNamespace
 
-from astrbot_plugin_super_draw.images import images
+from astrbot_plugin_super_draw.draw.picture import picture
 
 
 def test_images_decode_embedded_data():
     encoded = base64.b64encode(b"image").decode()
 
-    assert asyncio.run(images.download(f"base64://{encoded}")) == b"image"
-    assert asyncio.run(images.download(f"data:image/png;base64,{encoded}")) == b"image"
+    assert asyncio.run(picture.download(f"base64://{encoded}")) == b"image"
+    assert asyncio.run(picture.download(f"data:image/png;base64,{encoded}")) == b"image"
 
 
 def test_images_reject_local_file_paths():
-    assert asyncio.run(images.download("C:/secret/image.png", local=True)) is None
+    assert asyncio.run(picture.download("C:/secret/image.png", local=True)) is None
 
 
 def test_reply_fetches_original_message_images():
@@ -34,7 +34,7 @@ def test_reply_fetches_original_message_images():
         message_str="",
     )
 
-    result = asyncio.run(images.collect(event))
+    result = asyncio.run(picture.collect(event))
 
     assert result == [raw]
     assert calls == [("get_msg", {"message_id": 123, "self_id": "bot"})]
@@ -56,7 +56,7 @@ def test_reply_fetches_original_when_inline_chain_has_no_image():
         message_str="",
     )
 
-    assert asyncio.run(images.collect(event)) == [raw]
+    assert asyncio.run(picture.collect(event)) == [raw]
 
 
 def test_forward_fetches_nested_images_with_standard_and_legacy_fallback():
@@ -78,7 +78,7 @@ def test_forward_fetches_nested_images_with_standard_and_legacy_fallback():
         message_str="",
     )
 
-    result = asyncio.run(images.collect(event))
+    result = asyncio.run(picture.collect(event))
 
     assert result == [raw]
     assert calls[0] == ("get_forward_msg", {"message_id": 456, "self_id": "bot"})
@@ -97,7 +97,7 @@ def test_image_component_reads_local_path(tmp_path: Path):
         message_str="",
     )
 
-    assert asyncio.run(images.collect(event)) == [raw]
+    assert asyncio.run(picture.collect(event)) == [raw]
 
 
 def test_image_component_reads_windows_file_uri(tmp_path: Path):
@@ -112,4 +112,4 @@ def test_image_component_reads_windows_file_uri(tmp_path: Path):
         message_str="",
     )
 
-    assert asyncio.run(images.collect(event)) == [raw]
+    assert asyncio.run(picture.collect(event)) == [raw]

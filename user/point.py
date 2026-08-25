@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 
-class Points:
+class Point:
     def __init__(self, path: str | Path, config: Any | None = None):
         self.path = Path(path)
         self.config = config or {}
