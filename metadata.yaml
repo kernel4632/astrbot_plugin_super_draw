@@ -2,8 +2,8 @@
 name: astrbot_plugin_super_draw
 display_name: 超级生图
 short_desc: 群聊生图插件，支持 OpenAI Images、OpenAI Chat、Gemini、积分制和 LLM 工具调用
-desc: 超级生图 5.1.0，统一模型列表配置，支持文生图和带参考图生图、预设提示词、LLM 自动调用、积分制、黑名单、生图后评价和多 Key 轮换。源码按生图、用户和设置分目录，普通请求失败自动退款，仅内容策略拒绝扣分。
-version: v5.1.0
+desc: 超级生图 5.2.0，统一模型列表配置，支持文生图和带参考图生图、预设提示词、LLM 自动调用、积分制、黑名单、生图后评价和多 Key 轮换。源码按生图、用户和设置分目录，错误信息自动提取并脱敏，普通请求失败自动退款，仅内容策略拒绝扣分。
+version: v5.2.0
 author: Kernyr
 repo: https://github.com/kernel4632/astrbot_plugin_super_draw
 astrbot_version: ">=4.20.1"

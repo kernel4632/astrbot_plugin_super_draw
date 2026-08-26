@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import inspect
+import json
+import re
 from typing import Any, Callable
 
 import httpx
@@ -52,9 +54,7 @@ def failure(error: Exception, fallback: str = "request") -> ModelFailure:
         detail = body.get("error", body)
         if isinstance(detail, dict):
             code = detail.get("code") or detail.get("type")
-    message = str(error)
-    if response is not None and getattr(response, "text", None):
-        message = f"{message}: {response.text}"
+    message = extract(error)
     lower = f"{code or ''} {message}".lower()
     if "policy" in lower or "content_filter" in lower or "safety" in lower:
         return ModelFailure("policy", message, status, str(code) if code else None)
@@ -63,6 +63,46 @@ def failure(error: Exception, fallback: str = "request") -> ModelFailure:
     if isinstance(error, (httpx.NetworkError,)) or "connection" in lower:
         return ModelFailure("network", message, status, str(code) if code else None)
     return ModelFailure(fallback, message, status, str(code) if code else None)
+
+
+def extract(error: Exception) -> str:
+    """只取服务商错误正文里的说明，避免把请求地址带给用户。"""
+    response = getattr(error, "response", None)
+    body = getattr(error, "body", None)
+    text = getattr(response, "text", "") if response is not None else ""
+    value = body or text
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except json.JSONDecodeError:
+            pass
+    message = find(value)
+    return sanitize(message or str(error).split(" for url ", 1)[0])
+
+
+def find(value: Any) -> str:
+    """从常见 JSON 错误结构中取出 message，不关心 HTTP 状态码。"""
+    if isinstance(value, dict):
+        message = value.get("message")
+        if isinstance(message, str) and message.strip():
+            return message.strip()
+        return find(value.get("error"))
+    if isinstance(value, list):
+        return next((found for item in value if (found := find(item))), "")
+    return ""
+
+
+def sanitize(message: str) -> str:
+    """删除错误文本中的地址、邮箱和密钥，保留剩余原文。"""
+    patterns = (
+        (r"https?://[^\s\"']+", "[地址]"),
+        (r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b", "[地址]"),
+        (r"[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}", "[邮箱]"),
+        (r"\b(?:sk|key|AIza)[-_][A-Za-z0-9_-]{8,}\b", "[密钥]"),
+    )
+    for pattern, replacement in patterns:
+        message = re.sub(pattern, replacement, message, flags=re.IGNORECASE)
+    return message.strip()
 
 
 async def decode(payload: Any, timeout: int) -> list[bytes]:

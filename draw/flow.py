@@ -4,14 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import re
 import time
 from pathlib import Path
 from typing import Any
 
 from astrbot.api import logger
 
-from .model import ModelFailure, model
+from .model import ModelFailure, extract, model
 from .picture import picture
 from .send import send
 from .task import DrawJob, DrawRequest, task
@@ -123,11 +122,11 @@ class Flow:
                     self.config.penalty400,
                     policy=True,
                 )
-                text = f"生图失败（{job.id}）：内容违规，扣 {penalty} 分\n{self.safe(error)}"
+                text = f"生图失败（{job.id}）：内容违规，扣 {penalty} 分\n{error.message}"
             else:
                 self.refund(job)
-                text = f"生图失败（{job.id}），积分退给你了：{self.safe(error)}"
-            logger.error(f"[SuperDraw] {job.id} 失败: {error}")
+                text = f"生图失败（{job.id}），积分退给你了：{error.message}"
+            logger.error(f"[SuperDraw] {job.id} 失败: {error.message}")
             await send.failure(
                 self.context,
                 request.origin,
@@ -136,11 +135,11 @@ class Flow:
             )
         except Exception as error:
             self.refund(job)
-            logger.error(f"[SuperDraw] {job.id} 失败: {error}")
+            logger.error(f"[SuperDraw] {job.id} 失败: {extract(error)}")
             await send.failure(
                 self.context,
                 request.origin,
-                f"生图失败（{job.id}），积分退给你了：{self.safe(error)}",
+                f"生图失败（{job.id}），积分退给你了：{extract(error)}",
                 request.message_id if self.config.richTaskFeedback else "",
             )
         finally:
@@ -325,9 +324,6 @@ class Flow:
     def identify(self, request: DrawRequest) -> str:
         seed = f"{time.time_ns()}|{request.user_id}|{request.prompt[:80]}"
         return hashlib.md5(seed.encode()).hexdigest()[:4]
-
-    def safe(self, error: Exception) -> str:
-        return re.sub(r"(sk-|key-|AIza)[A-Za-z0-9_-]{8,}", "***", str(error))
 
     def store(self) -> None:
         self.config.raw["presets"] = [

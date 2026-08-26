@@ -1,6 +1,6 @@
 [project]
 name = "astrbot_plugin_super_draw"
-version = "5.1.0"
+version = "5.2.0"
 description = "AstrBot 超级生图插件，按生图、用户和设置分目录，支持 OpenAI Images、OpenAI Chat 和 Gemini。"
 readme = "README.md"
 requires-python = ">=3.10"

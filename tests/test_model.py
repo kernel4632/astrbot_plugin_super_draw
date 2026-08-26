@@ -70,3 +70,28 @@ def test_policy_error_is_policy_and_not_retried(monkeypatch):
         asyncio.run(models.model.draw({"model": "image", "apiKey": "key", "maxRetry": 3}, "cat", []))
     assert caught.value.kind == "policy"
     assert client.images.generate.await_count == 1
+
+
+def test_error_extracts_message_without_url_ip_or_email():
+    class Response:
+        text = '{"error":{"message":"图片违反内容政策","code":"content_policy_violation","account_email":"shire_gorges_2o@icloud.com"}}'
+
+    error = httpx.HTTPStatusError(
+        "Client error '400 Bad Request' for url 'http://154.12.29.232:3000/v1/images/edits'",
+        request=httpx.Request("POST", "http://154.12.29.232:3000/v1/images/edits"),
+        response=Response(),
+    )
+
+    failure = models.failure(error)
+
+    assert failure.message == "图片违反内容政策"
+    assert "154.12.29.232" not in failure.message
+    assert "icloud.com" not in failure.message
+
+
+def test_error_sanitizes_fallback_exception():
+    failure = models.failure(
+        RuntimeError("request failed for url 'http://154.12.29.232:3000' with sk-testkey12345678")
+    )
+
+    assert failure.message == "request failed"
