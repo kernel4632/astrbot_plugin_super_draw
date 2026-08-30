@@ -59,6 +59,34 @@ def test_reply_fetches_original_when_inline_chain_has_no_image():
     assert asyncio.run(picture.collect(event)) == [raw]
 
 
+def test_reply_inside_replied_message_is_not_followed():
+    from astrbot.api import message_components as Comp
+
+    first = b"\x89PNG\r\n\x1a\n" + b"first" * 8
+    second = b"GIF89a" + b"second" * 8
+    calls = []
+
+    async def call_action(name, **kwargs):
+        calls.append((name, kwargs))
+        if kwargs["message_id"] == 123:
+            return {
+                "message": [
+                    {"type": "image", "data": {"file": "base64://" + base64.b64encode(first).decode()}},
+                    {"type": "reply", "data": {"id": "456"}},
+                ]
+            }
+        return {"message": [{"type": "image", "data": {"file": "base64://" + base64.b64encode(second).decode()}}]}
+
+    event = SimpleNamespace(
+        message_obj=SimpleNamespace(message=[Comp.Reply(id="123", chain=[])]),
+        bot=SimpleNamespace(call_action=call_action),
+        message_str="",
+    )
+
+    assert asyncio.run(picture.collect(event)) == [first]
+    assert calls == [("get_msg", {"message_id": 123})]
+
+
 def test_forward_fetches_nested_images_with_standard_and_legacy_fallback():
     from astrbot.api import message_components as Comp
 

@@ -115,6 +115,7 @@ class Picture:
         event: Any,
         result: list[bytes],
         forwards: set[str],
+        allow_reply: bool = True,
     ) -> None:
         if value is None or len(result) >= 8:
             return
@@ -124,25 +125,27 @@ class Picture:
                 result.append(data)
             return
         if self.kind(value, "Reply"):
+            if not allow_reply:
+                return
             chain = getattr(value, "chain", None)
             before = len(result)
             if chain:
-                await self.scan(chain, event, result, forwards)
+                await self.scan(chain, event, result, forwards, allow_reply)
             if len(result) == before:
                 await self.reply(self.id(value), event, result, forwards)
             return
         if self.kind(value, "Node"):
-            await self.scan(getattr(value, "content", None), event, result, forwards)
+            await self.scan(getattr(value, "content", None), event, result, forwards, allow_reply)
             return
         if self.kind(value, "Nodes"):
-            await self.scan(getattr(value, "nodes", None), event, result, forwards)
+            await self.scan(getattr(value, "nodes", None), event, result, forwards, allow_reply)
             return
         if self.kind(value, "Forward"):
-            await self.forward(str(getattr(value, "id", "") or ""), event, result, forwards)
+            await self.forward(str(getattr(value, "id", "") or ""), event, result, forwards, allow_reply)
             return
         if isinstance(value, (list, tuple)):
             for item in value:
-                await self.scan(item, event, result, forwards)
+                await self.scan(item, event, result, forwards, allow_reply)
                 if len(result) >= 8:
                     return
             return
@@ -160,24 +163,33 @@ class Picture:
                 result.append(image)
             return
         if kind == "reply":
+            if not allow_reply:
+                return
             chain = data.get("chain")
             before = len(result)
             if chain:
-                await self.scan(chain, event, result, forwards)
+                await self.scan(chain, event, result, forwards, allow_reply)
             if len(result) == before:
                 await self.reply(self.id(data), event, result, forwards)
             return
         if kind == "forward":
-            await self.forward(self.id(data), event, result, forwards)
+            await self.forward(self.id(data), event, result, forwards, allow_reply)
             return
         for key in ("messages", "message", "nodes", "content", "data"):
             child = value.get(key)
             if child is not None and child is not value:
-                await self.scan(child, event, result, forwards)
+                await self.scan(child, event, result, forwards, allow_reply)
                 if len(result) >= 8:
                     return
 
-    async def forward(self, forward_id: str, event: Any, result: list[bytes], forwards: set[str]) -> None:
+    async def forward(
+        self,
+        forward_id: str,
+        event: Any,
+        result: list[bytes],
+        forwards: set[str],
+        allow_reply: bool = True,
+    ) -> None:
         marker = f"forward:{forward_id}"
         if not forward_id or marker in forwards:
             return
@@ -187,7 +199,7 @@ class Picture:
         except Exception as error:
             logger.warning(f"[SuperDraw] 读取合并转发消息失败: {error}")
             return
-        await self.scan(payload, event, result, forwards)
+        await self.scan(payload, event, result, forwards, allow_reply)
 
     async def reply(self, message_id: str, event: Any, result: list[bytes], forwards: set[str]) -> None:
         marker = f"reply:{message_id}"
@@ -199,7 +211,7 @@ class Picture:
         except Exception as error:
             logger.warning(f"[SuperDraw] 读取引用消息失败: {error}")
             return
-        await self.scan(payload, event, result, forwards)
+        await self.scan(payload, event, result, forwards, False)
 
     async def action(self, event: Any, name: str, message_id: str) -> Any:
         bot = getattr(event, "bot", None)
