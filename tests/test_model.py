@@ -103,3 +103,19 @@ def test_chinese_policy_message_is_classified_as_policy():
     failure = models.failure(error)
 
     assert failure.kind == "policy"
+
+
+def test_sexualized_body_change_is_classified_as_policy():
+    error = RuntimeError("抱歉，我不能帮助修改图片以突出或放大角色的性化身体特征（例如大幅增大胸部）。")
+
+    failure = models.failure(error)
+
+    assert failure.kind == "policy"
+
+
+def test_generic_chinese_refusal_is_classified_as_policy():
+    error = RuntimeError("抱歉，我不能协助完成这个图片修改请求。")
+
+    failure = models.failure(error)
+
+    assert failure.kind == "policy"
