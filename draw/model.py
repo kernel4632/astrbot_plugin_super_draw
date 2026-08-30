@@ -56,7 +56,8 @@ def failure(error: Exception, fallback: str = "request") -> ModelFailure:
             code = detail.get("code") or detail.get("type")
     message = extract(error)
     lower = f"{code or ''} {message}".lower()
-    if "policy" in lower or "content_filter" in lower or "safety" in lower:
+    policy_words = ("policy", "content_filter", "safety", "裸露", "色情", "情色", "内容政策", "防护限制")
+    if any(word in lower for word in policy_words):
         return ModelFailure("policy", message, status, str(code) if code else None)
     if isinstance(error, (asyncio.TimeoutError, httpx.TimeoutException)) or "timeout" in lower:
         return ModelFailure("timeout", message, status, str(code) if code else None)

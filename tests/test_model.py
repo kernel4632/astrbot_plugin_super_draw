@@ -95,3 +95,11 @@ def test_error_sanitizes_fallback_exception():
     )
 
     assert failure.message == "request failed"
+
+
+def test_chinese_policy_message_is_classified_as_policy():
+    error = RuntimeError("非常抱歉，该提示可能违反了关于裸露、色情或情色内容的防护限制")
+
+    failure = models.failure(error)
+
+    assert failure.kind == "policy"
