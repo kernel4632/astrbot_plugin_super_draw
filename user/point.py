@@ -59,9 +59,7 @@ class Point:
 
     def set(self, uid: str, value: int) -> int:
         user = self.user(uid)
-        before = user["points"]
         user["points"] = max(0, int(value))
-        self.record(user, user["points"] - before)
         self.save()
         return user["points"]
 

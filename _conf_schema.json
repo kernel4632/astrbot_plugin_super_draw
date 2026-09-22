@@ -13,9 +13,10 @@
   },
   "ban_list": {
     "description": "生图黑名单",
-    "hint": "填写用户 ID，黑名单中的用户无法使用生图功能；Bot 工具可通过 super_draw_ban 管理",
+    "hint": "填写用户 QQ 号，例如 123456789；黑名单中的用户无法使用生图功能（Bot 也可通过 super_draw_ban 工具管理）",
     "type": "list",
-    "default": []
+    "default": [],
+    "obvious_hint": true
   },
   "debug_mode": {
     "description": "调试模式",
@@ -31,28 +32,34 @@
   },
   "api_providers": {
     "description": "API 供应商配置",
-    "hint": "支持 OpenAI 兼容接口和 Gemini 官方接口，可添加多个供应商和模型",
+    "hint": "支持 OpenAI 兼容接口和 Gemini 官方接口，可添加多个供应商和模型；每个条目的「供应商名称」请保持唯一，否则面板里无法区分",
     "type": "template_list",
     "templates": {
       "openai": {
         "name": "OpenAI 兼容接口",
-        "hint": "适用于 OpenAI、硅基流动、DeepSeek 等兼容接口",
+        "hint": "适用于 OpenAI、硅基流动、各类中转站的图片接口或对话接口",
         "display_item": "name",
         "items": {
           "name": {
             "description": "供应商名称",
-            "hint": "用来区分不同供应商，例如 GPT-Image、硅基流动",
+            "hint": "用来区分不同供应商，例如 GPT-Image、硅基流动；务必唯一，面板折叠后只显示这个名字",
             "type": "string",
             "default": "OpenAI"
           },
           "api_type": {
             "description": "接口类型",
+            "hint": "openai：调用 /v1/images/generations 与 /v1/images/edits；openai_chat：调用 /v1/chat/completions 出图（部分中转站只支持这种）；gemini：Gemini 原生接口，建议改用右侧「Gemini 官方接口」模板",
             "type": "string",
             "default": "openai",
             "options": [
               "openai",
               "openai_chat",
               "gemini"
+            ],
+            "labels": [
+              "图片接口 /images/*",
+              "对话接口 /chat/completions 出图",
+              "Gemini 原生接口"
             ]
           },
           "base_url": {
@@ -63,7 +70,7 @@
           },
           "api_keys": {
             "description": "API Keys",
-            "hint": "多个 Key 会自动轮换使用",
+            "hint": "多个 Key 会自动轮换使用；面板会明文显示，注意保密",
             "type": "list",
             "default": []
           },
@@ -77,23 +84,25 @@
       },
       "gemini": {
         "name": "Gemini 官方接口",
-        "hint": "适用于 Google Gemini 官方生图 API",
+        "hint": "适用于 Google Gemini 官方生图 API 或代理",
         "display_item": "name",
         "items": {
           "name": {
             "description": "供应商名称",
-            "hint": "用来区分不同供应商",
+            "hint": "用来区分不同供应商，例如 Gemini 官方、XX 中转",
             "type": "string",
             "default": "Gemini"
           },
           "api_type": {
             "description": "接口类型",
+            "hint": "该模板固定使用 Gemini 原生 generateContent 接口",
             "type": "string",
             "default": "gemini",
             "options": [
-              "openai",
-              "openai_chat",
               "gemini"
+            ],
+            "labels": [
+              "Gemini 原生接口 generateContent"
             ]
           },
           "base_url": {
@@ -104,7 +113,7 @@
           },
           "api_keys": {
             "description": "API Keys",
-            "hint": "多个 Key 会自动轮换使用",
+            "hint": "多个 Key 会自动轮换使用；面板会明文显示，注意保密",
             "type": "list",
             "default": []
           },
@@ -127,9 +136,10 @@
     "items": {
       "model": {
         "description": "当前生图模型",
-        "hint": "格式为 供应商名/模型名，留空自动选第一个可用模型",
+        "hint": "格式必须为「供应商名/模型名」，例如 AKer/gpt-image-2-only；留空或填错都会自动改用第一个可用模型。也可以直接在群里用 /生图模型 切换",
         "type": "string",
-        "default": ""
+        "default": "",
+        "obvious_hint": true
       },
       "max_retry_attempts": {
         "description": "最大重试次数",
@@ -144,7 +154,7 @@
       },
       "timeout": {
         "description": "生图超时时间（秒）",
-        "hint": "单次 API 请求的超时时间",
+        "hint": "单次 API 请求的超时时间；任务总时限约为「超时 × 重试次数 + 60 秒」，即 600 秒 × 1 次重试 ≈ 等待 11 分钟",
         "type": "int",
         "default": 600,
         "slider": {
@@ -160,7 +170,7 @@
         "default": 3,
         "slider": {
           "min": 1,
-          "max": 100,
+          "max": 30,
           "step": 1
         }
       }
@@ -185,6 +195,9 @@
           "min": 0,
           "max": 50,
           "step": 1
+        },
+        "condition": {
+          "enable_points": true
         }
       },
       "message_point_cooldown_seconds": {
@@ -196,6 +209,9 @@
           "min": 0,
           "max": 3600,
           "step": 5
+        },
+        "condition": {
+          "enable_points": true
         }
       },
       "draw_cost_per_image": {
@@ -206,17 +222,23 @@
           "min": 0,
           "max": 100,
           "step": 1
+        },
+        "condition": {
+          "enable_points": true
         }
       },
       "bad_request_penalty_points": {
         "description": "内容策略拒绝扣分",
-        "hint": "仅 API 明确返回内容安全或策略拒绝时扣除积分。普通 400、参数错误、网络错误和超时都会退款",
+        "hint": "仅 API 明确返回内容安全或策略拒绝时扣除积分。普通 400、参数错误、网络错误和超时都会退款；建议不超过单次生图消耗的 2~3 倍，误判代价小一些",
         "type": "int",
         "default": 50,
         "slider": {
           "min": 0,
           "max": 100,
           "step": 1
+        },
+        "condition": {
+          "enable_points": true
         }
       },
       "new_user_points": {
@@ -228,6 +250,9 @@
           "min": 0,
           "max": 1000,
           "step": 5
+        },
+        "condition": {
+          "enable_points": true
         }
       },
       "enable_data_tools": {
@@ -251,15 +276,22 @@
       },
       "commentary_provider_id": {
         "description": "生图后评价模型",
-        "hint": "填写 AstrBot 已配置的聊天模型 provider_id；留空使用当前会话模型",
+        "hint": "选择 AstrBot 已配置的聊天模型；留空使用当前会话模型",
         "type": "string",
-        "default": ""
+        "_special": "select_provider",
+        "default": "",
+        "condition": {
+          "enable_commentary": true
+        }
       },
       "commentary_template": {
         "description": "生图后评价模板",
         "hint": "可用变量：{prompt} 用户需求、{model} 生图模型、{context} 会话历史、{images} 图片信息、{max_length} 最大字数",
         "type": "text",
-        "default": "你是群聊里的 Bot，刚刚完成了一次生图。结合群聊上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n图片信息：\n{images}\n要求：最多 {max_length} 字，接续之前发起请求的人的那种回复，尽可能的模仿群友说话风格，根据上下文。"
+        "default": "你是群聊里的 Bot，刚刚完成了一次生图。结合群聊上下文和用户需求，自然接一句短回复。\n用户需求：{prompt}\n使用模型：{model}\n群聊上下文：\n{context}\n图片信息：\n{images}\n要求：最多 {max_length} 字，接续之前发起请求的人的那种回复，尽可能的模仿群友说话风格，根据上下文。",
+        "condition": {
+          "enable_commentary": true
+        }
       },
       "commentary_max_length": {
         "description": "生图后评价最大字数",
@@ -270,6 +302,9 @@
           "min": 20,
           "max": 500,
           "step": 10
+        },
+        "condition": {
+          "enable_commentary": true
         }
       }
     }

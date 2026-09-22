@@ -1,4 +1,4 @@
-# AstrBot 超级生图插件 5.2.0
+# AstrBot 超级生图插件 5.3.0
 
 群聊生图插件。发送 `/生图 一只猫坐在窗边看雨` 即可开始。消息、回复和合并聊天记录中的图片会作为参考图。Bot 也能调用 `super_draw` 工具生图。
 
@@ -54,3 +54,7 @@ setting/config.py       WebUI 配置和当前模型
 积分按用户 ID 全局保存，文件在 AstrBot 插件数据目录的 `points.json`。
 
 找文件时只需要按实际要改的功能判断：引用图片问题看 `draw/picture.py`，模型请求问题看 `draw/model.py`，积分问题看 `user/point.py`，配置问题看 `setting/config.py`。
+
+## 更新日志
+
+每个版本的主要变更见 [CHANGELOG.md](CHANGELOG.md)。

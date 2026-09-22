@@ -155,10 +155,10 @@ class Picture:
         kind = str(value.get("type") or "").lower()
         data = value.get("data") if isinstance(value.get("data"), dict) else value
         if kind == "image":
-            image = await self.download(
-                data.get("url") or data.get("path") or data.get("file"),
-                local=True,
-            )
+            source = data.get("url") or data.get("path") or data.get("file")
+            image = await self.download(source, local=True)
+            if not image and data.get("file"):
+                image = await self.get_image_bytes(event, data["file"])
             if image:
                 result.append(image)
             return
@@ -212,6 +212,28 @@ class Picture:
             logger.warning(f"[SuperDraw] 读取引用消息失败: {error}")
             return
         await self.scan(payload, event, result, forwards, False)
+
+    async def call_api(self, event: Any, api_name: str, params: dict[str, Any]) -> Any:
+        bot = getattr(event, "bot", None)
+        direct = getattr(bot, "call_action", None)
+        nested = getattr(getattr(bot, "api", None), "call_action", None)
+        call = direct if callable(direct) else nested
+        if not callable(call):
+            raise RuntimeError("当前消息平台不支持 OneBot 消息查询")
+        routing = self.routing(event)
+        response = call(api_name, **params, **routing)
+        return await response if inspect.isawaitable(response) else response
+
+    async def get_image_bytes(self, event: Any, file: str) -> bytes | None:
+        try:
+            payload = await self.call_api(event, "get_image", {"file": file})
+            if isinstance(payload, dict):
+                url = payload.get("url") or payload.get("file")
+                if url:
+                    return await self.download(url, local=True)
+        except Exception as error:
+            logger.warning(f"[SuperDraw] get_image 失败: {error}")
+        return None
 
     async def action(self, event: Any, name: str, message_id: str) -> Any:
         bot = getattr(event, "bot", None)

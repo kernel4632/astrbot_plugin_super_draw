@@ -68,6 +68,61 @@ class Event:
         value = raw.get("message_id") if isinstance(raw, dict) else getattr(raw, "message_id", None)
         return str(value) if value else ""
 
+    def reply_urls(self) -> list[str]:
+        message = getattr(self.event, "message_obj", None)
+        urls = []
+
+        def collect(value):
+            if value is None or len(urls) >= 8:
+                return
+            if isinstance(value, Comp.Image):
+                url = getattr(value, "url", "") or getattr(value, "path", "") or getattr(value, "file", "") or ""
+                if url:
+                    urls.append(url)
+                return
+            if isinstance(value, Comp.Reply):
+                chain = getattr(value, "chain", None)
+                if chain is not None:
+                    collect(chain)
+                return
+            if isinstance(value, (list, tuple)):
+                for item in value:
+                    collect(item)
+                    if len(urls) >= 8:
+                        return
+                return
+            if not isinstance(value, dict):
+                return
+            kind = str(value.get("type") or "").lower()
+            data = value.get("data") if isinstance(value.get("data"), dict) else value
+            if kind == "image":
+                for key in ("url", "path", "file"):
+                    url = data.get(key, "") if isinstance(data, dict) else ""
+                    if url:
+                        urls.append(str(url))
+                        return
+            if kind == "reply":
+                chain = data.get("chain") if isinstance(data, dict) else None
+                if chain is not None:
+                    collect(chain)
+                return
+            for key in ("message", "messages", "chain", "content", "nodes"):
+                child = value.get(key)
+                if child is not None and child is not value:
+                    collect(child)
+                    if len(urls) >= 8:
+                        return
+
+        for name in ("message", "raw_message"):
+            raw_msg = getattr(message, name, None)
+            if isinstance(raw_msg, list):
+                collect(raw_msg)
+            elif isinstance(raw_msg, dict):
+                collect(raw_msg.get("message", []))
+            if urls:
+                break
+        return urls[:8]
+
     def target(self) -> str:
         message = getattr(self.event, "message_obj", None)
         self_id = str(getattr(message, "self_id", "") or "")
@@ -97,7 +152,7 @@ class SuperDraw(Star):
     async def cmd_draw(self, event: AstrMessageEvent):
         view = Event(event)
         prompt, preset = self.flow.resolve(view.body())
-        result = await self.flow.draw(view.request(prompt))
+        result = await self.flow.draw(view.request(prompt, urls=view.reply_urls()))
         if preset:
             result += f"\n预设：{preset}"
         yield event.plain_result(result)
@@ -151,7 +206,12 @@ class SuperDraw(Star):
             for token in (event.message_str or "").split()
             if not token.startswith(("@", "/"))
         ]
-        amount = int(tokens[-1]) if tokens and tokens[-1].lstrip("+-").isdigit() else 0
+        amount = 0
+        if tokens and tokens[-1].lstrip("+-").isdigit():
+            try:
+                amount = int(tokens[-1])
+            except ValueError:
+                amount = 0
         if amount == 0:
             yield event.plain_result("请填写积分数量，例如：/生图改分 @用户 50")
             event.stop_event()
@@ -195,7 +255,10 @@ class SuperDraw(Star):
             reason(string): 修改原因
         """
         view = Event(event)
-        return self.flow.data(action, user_key.strip() or view.user(), delta, reason)
+        role = str(getattr(event, "role", "") or "member")
+        return self.flow.data(
+            action, user_key.strip() or view.user(), delta, reason, role
+        )
 
     @filter.llm_tool(name="super_draw_ban")
     async def tool_ban(

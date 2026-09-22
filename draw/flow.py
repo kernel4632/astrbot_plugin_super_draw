@@ -84,11 +84,14 @@ class Flow:
         request = job.request
         paths: list[str] = []
         try:
-            output = await model.draw(
-                job.model,
-                request.prompt,
-                request.images,
-                key_getter=self.key,
+            output = await asyncio.wait_for(
+                model.draw(
+                    job.model,
+                    request.prompt,
+                    request.images,
+                    key_getter=self.key,
+                ),
+                timeout=self.wait_budget(),
             )
             for data in output:
                 if path := temp.save(data):
@@ -274,14 +277,22 @@ class Flow:
         return ban.change(self.config.banList, action, user_id, save)
 
     def balance(self, user_id: str) -> str:
-        value = self.point.give(user_id, 0)
-        user = self.point.users[user_id]
-        return f"积分：{value} 分\n发言：{user.get('talk', 0)} 次\n生图消耗：{user.get('spent', 0)} 分"
+        user = self.point.user(user_id)
+        return f"积分：{user['points']} 分\n发言：{user.get('talk', 0)} 次\n生图消耗：{user.get('spent', 0)} 分"
 
-    def data(self, action: str, user_id: str, delta: int = 0, reason: str = "") -> str:
+    def data(
+        self,
+        action: str,
+        user_id: str,
+        delta: int = 0,
+        reason: str = "",
+        role: str = "member",
+    ) -> str:
         if not self.config.enableDataTool:
             return "数据工具当前关闭。"
         action = action.strip().lower()
+        if action in {"change_points", "set_points"} and role not in {"admin", "owner"}:
+            return "改分是管理员操作，普通群友请发言攒积分。"
         if action == "summary":
             return f"状态：{'开启' if self.config.enabled else '关闭'}\n模型：{self.config.modelKey or '未配置'}\n用户数：{len(self.point.users)}\n预设数：{len(self.config.presets)}\n黑名单：{len(self.config.banList)} 人"
         if action in {"my_points", "user_points"}:
@@ -312,6 +323,12 @@ class Flow:
     def talk(self, user_id: str, name: str) -> int:
         return self.point.talk(user_id, name)
 
+    def wait_budget(self) -> float:
+        """单任务总时限：timeout × maxRetry + 余量，防止重试把失败报告拖到天荒地老。"""
+        single = max(1, int(getattr(self.config, "timeout", 180) or 180))
+        retries = max(1, int(getattr(self.config, "maxRetry", 3) or 3))
+        return float(single * retries + 60)
+
     def key(self, selected: ModelConfig) -> str:
         values = selected.apiKeys or []
         if not values:
@@ -322,8 +339,12 @@ class Flow:
         return values[index % len(values)]
 
     def identify(self, request: DrawRequest) -> str:
-        seed = f"{time.time_ns()}|{request.user_id}|{request.prompt[:80]}"
-        return hashlib.md5(seed.encode()).hexdigest()[:4]
+        seed = f"{time.time_ns()}|{request.user_id}|{request.prompt[:80]}|{len(self.tasks)}"
+        task_id = hashlib.md5(seed.encode()).hexdigest()[:8]
+        while task_id in self.tasks:
+            seed = f"{task_id}|{time.time_ns()}"
+            task_id = hashlib.md5(seed.encode()).hexdigest()[:8]
+        return task_id
 
     def store(self) -> None:
         self.config.raw["presets"] = [

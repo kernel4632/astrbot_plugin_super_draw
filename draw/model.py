@@ -241,7 +241,9 @@ class Model:
         if genai is None or genai_types is None:
             raise ModelFailure("unavailable", "google-genai dependency is unavailable")
         try:
-            client = genai.Client(api_key=key)
+            base = (get(config, "baseUrl", "") or get(config, "base_url", "") or "").strip()
+            http_options = genai_types.HttpOptions(base_url=base) if base else None
+            client = genai.Client(api_key=key, http_options=http_options)
             parts = [genai_types.Part.from_text(text=prompt)]
             for image in images[:16]:
                 clean, mime = normalize_to_supported_image(image, target_fmt="png")
