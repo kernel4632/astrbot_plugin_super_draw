@@ -35,6 +35,7 @@ class Config:
         self.maxRetry = self.number(generation.get("max_retry_attempts", 3), 3, 1, 10)
         self.timeout = self.number(generation.get("timeout", 180), 180, 1, 600)
         self.maxQueue = self.number(generation.get("max_active_jobs", 3), 3, 1, 100)
+        self.maxRefImages = self.number(generation.get("max_reference_images", 0), 0, 0, 500)
         self.modelKey = str(generation.get("model", "") or "").strip()
 
         commentary = self.mapping(self.read("commentary", {}))

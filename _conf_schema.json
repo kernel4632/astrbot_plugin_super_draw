@@ -173,6 +173,17 @@
           "max": 30,
           "step": 1
         }
+      },
+      "max_reference_images": {
+        "description": "参考图数量上限",
+        "hint": "0 表示不限制。图片过多时部分模型接口可能报错，可按需限制",
+        "type": "int",
+        "default": 0,
+        "slider": {
+          "min": 0,
+          "max": 50,
+          "step": 1
+        }
       }
     }
   },

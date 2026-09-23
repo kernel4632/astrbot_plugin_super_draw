@@ -50,9 +50,9 @@ class Flow:
             if data := await picture.download(url, local=True):
                 collected.append(data)
         if request.source is not None:
-            collected.extend(await picture.collect(request.source))
+            collected.extend(await picture.collect(request.source, self.config.maxRefImages))
         request.source = None
-        request.images = self.unique(request.images + collected)
+        request.images = self.unique(request.images + collected, self.config.maxRefImages)
 
         if message := self.point.check(request.user_id):
             return message
@@ -330,8 +330,8 @@ class Flow:
         return float(single * retries + 60)
 
     @staticmethod
-    def unique(images: list[bytes]) -> list[bytes]:
-        """参考图按内容去重并限制数量，避免同一张图重复占用名额。"""
+    def unique(images: list[bytes], limit: int = 0) -> list[bytes]:
+        """参考图按内容去重；limit > 0 时限制数量，否则不限制。"""
         seen: set[bytes] = set()
         result: list[bytes] = []
         for data in images:
@@ -342,7 +342,7 @@ class Flow:
                 continue
             seen.add(marker)
             result.append(data)
-            if len(result) >= 8:
+            if limit > 0 and len(result) >= limit:
                 break
         return result
 

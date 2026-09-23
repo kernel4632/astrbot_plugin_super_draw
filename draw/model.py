@@ -191,7 +191,7 @@ class Model:
             if images:
                 url = base if base.endswith("/v1") else f"{base}/v1"
                 prepared = []
-                for index, image in enumerate(images[:16]):
+                for index, image in enumerate(images):
                     clean, mime = normalize_to_supported_image(image, target_fmt="png")
                     prepared.append(("image", (f"ref_{index}.png", clean, mime)))
                 async with httpx.AsyncClient(timeout=timeout) as client:
@@ -212,7 +212,7 @@ class Model:
     async def chat(self, config: Any, key: str, prompt: str, images: list[bytes], size: str, quality: str, count: int) -> list[bytes]:
         base = (get(config, "baseUrl", "https://api.openai.com") or "https://api.openai.com").rstrip("/")
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-        for image in images[:16]:
+        for image in images:
             clean, mime = normalize_to_supported_image(image, target_fmt="png")
             content.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{base64.b64encode(clean).decode('ascii')}"}})
         request: dict[str, Any] = {"model": get(config, "model"), "messages": [{"role": "user", "content": content}]}
@@ -245,7 +245,7 @@ class Model:
             http_options = genai_types.HttpOptions(base_url=base) if base else None
             client = genai.Client(api_key=key, http_options=http_options)
             parts = [genai_types.Part.from_text(text=prompt)]
-            for image in images[:16]:
+            for image in images:
                 clean, mime = normalize_to_supported_image(image, target_fmt="png")
                 parts.append(genai_types.Part.from_bytes(data=clean, mime_type=mime))
             config_arg = genai_types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"])

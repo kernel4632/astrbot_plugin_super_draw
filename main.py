@@ -69,12 +69,15 @@ class Event:
         value = raw.get("message_id") if isinstance(raw, dict) else getattr(raw, "message_id", None)
         return str(value) if value else ""
 
-    def reply_urls(self) -> list[str]:
+    def reply_urls(self, limit: int = 0) -> list[str]:
         message = getattr(self.event, "message_obj", None)
         urls = []
 
+        def full() -> bool:
+            return limit > 0 and len(urls) >= limit
+
         def collect(value):
-            if value is None or len(urls) >= 8:
+            if value is None or full():
                 return
             if isinstance(value, Comp.Image):
                 url = getattr(value, "url", "") or getattr(value, "path", "") or getattr(value, "file", "") or ""
@@ -89,7 +92,7 @@ class Event:
             if isinstance(value, (list, tuple)):
                 for item in value:
                     collect(item)
-                    if len(urls) >= 8:
+                    if full():
                         return
                 return
             if not isinstance(value, dict):
@@ -111,7 +114,7 @@ class Event:
                 child = value.get(key)
                 if child is not None and child is not value:
                     collect(child)
-                    if len(urls) >= 8:
+                    if full():
                         return
 
         for name in ("message", "raw_message"):
@@ -122,7 +125,7 @@ class Event:
                 collect(raw_msg.get("message", []))
             if urls:
                 break
-        return urls[:8]
+        return urls
 
     def target(self) -> str:
         message = getattr(self.event, "message_obj", None)
@@ -153,7 +156,9 @@ class SuperDraw(Star):
     async def cmd_draw(self, event: AstrMessageEvent):
         view = Event(event)
         prompt, preset = self.flow.resolve(view.body())
-        result = await self.flow.draw(view.request(prompt, urls=view.reply_urls()))
+        result = await self.flow.draw(
+            view.request(prompt, urls=view.reply_urls(self.flow.config.maxRefImages))
+        )
         if preset:
             result += f"\n预设：{preset}"
         yield event.plain_result(result)
