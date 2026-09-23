@@ -47,12 +47,12 @@ class Flow:
 
         collected: list[bytes] = []
         for url in request.urls:
-            if data := await picture.download(url):
+            if data := await picture.download(url, local=True):
                 collected.append(data)
         if request.source is not None:
             collected.extend(await picture.collect(request.source))
         request.source = None
-        request.images = (request.images + collected)[:8]
+        request.images = self.unique(request.images + collected)
 
         if message := self.point.check(request.user_id):
             return message
@@ -328,6 +328,23 @@ class Flow:
         single = max(1, int(getattr(self.config, "timeout", 180) or 180))
         retries = max(1, int(getattr(self.config, "maxRetry", 3) or 3))
         return float(single * retries + 60)
+
+    @staticmethod
+    def unique(images: list[bytes]) -> list[bytes]:
+        """参考图按内容去重并限制数量，避免同一张图重复占用名额。"""
+        seen: set[bytes] = set()
+        result: list[bytes] = []
+        for data in images:
+            if not data:
+                continue
+            marker = hashlib.sha1(data).digest()
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(data)
+            if len(result) >= 8:
+                break
+        return result
 
     def key(self, selected: ModelConfig) -> str:
         values = selected.apiKeys or []
